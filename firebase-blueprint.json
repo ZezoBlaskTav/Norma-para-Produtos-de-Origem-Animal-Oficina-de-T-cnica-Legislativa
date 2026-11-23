@@ -1,0 +1,384 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "Perfil do Usuário",
+      "description": "Cadastro institucional e status de autorização do usuário autenticado.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID do usuário no Firebase Auth."
+        },
+        "nomeCompleto": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "description": "Nome completo do usuário."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 180,
+          "description": "E-mail do usuário autenticado."
+        },
+        "orgao": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Órgão, prefeitura, secretaria ou câmara."
+        },
+        "cargo": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Cargo ou função exercida."
+        },
+        "esferaPreferida": {
+          "type": "string",
+          "enum": ["Municipal", "Estadual", "Federal", "Distrital"],
+          "description": "Esfera administrativa padrão do usuário."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "admin"],
+          "description": "Papel de acesso no sistema."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pendente", "aprovado", "bloqueado"],
+          "description": "Estado de liberação de acesso controlado pelo administrador."
+        },
+        "observacaoAcesso": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Nota administrativa opcional sobre a liberação ou restrição."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp de servidor da criação do cadastro."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp de servidor da última atualização."
+        }
+      },
+      "required": [
+        "uid",
+        "nomeCompleto",
+        "email",
+        "orgao",
+        "cargo",
+        "esferaPreferida",
+        "role",
+        "status",
+        "observacaoAcesso",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AccessAllowlistEntry": {
+      "title": "Pré-autorização por E-mail",
+      "description": "Lista de e-mails autorizados previamente pelo administrador para acesso imediato.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "orgaoSugerido": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "observacao": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "addedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["email", "orgaoSugerido", "observacao", "addedByUid", "createdAt"]
+    },
+    "NormaCloudRecord": {
+      "title": "Norma Legislativa na Nuvem",
+      "description": "Minuta estruturada de decreto ou norma persistida por usuário aprovado.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID do proprietário da norma."
+        },
+        "titulo": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 180,
+          "description": "Identificação resumida da minuta."
+        },
+        "tipo": {
+          "type": "string",
+          "enum": [
+            "Decreto",
+            "Portaria",
+            "Instrução Normativa",
+            "Resolução",
+            "Norma Interna"
+          ],
+          "description": "Espécie normativa."
+        },
+        "numero": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "data": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "esfera": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "autoridade": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "fundamentoLegal": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "ementa": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "ordemExecucao": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "artigos": {
+          "type": "array",
+          "description": "Lista estruturada de artigos, incisos, alíneas e parágrafos."
+        },
+        "vigenciaTipo": {
+          "type": "string",
+          "enum": ["imediata", "dias", "data_certa"]
+        },
+        "vigenciaDias": {
+          "type": "number"
+        },
+        "vigenciaData": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "revogacoes": {
+          "type": "array",
+          "description": "Lista de atos expressamente revogados."
+        },
+        "localAssinatura": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "assinante": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "cargoAssinante": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "imagens": {
+          "type": "array",
+          "description": "Lista estruturada de imagens, carimbos e anexos gráficos vinculados à norma."
+        },
+        "observacoes": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Observações internas de redação e revisão vinculadas à minuta."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "titulo",
+        "tipo",
+        "numero",
+        "data",
+        "esfera",
+        "autoridade",
+        "fundamentoLegal",
+        "ementa",
+        "ordemExecucao",
+        "artigos",
+        "vigenciaTipo",
+        "vigenciaDias",
+        "vigenciaData",
+        "revogacoes",
+        "localAssinatura",
+        "assinante",
+        "cargoAssinante",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "NormaRevisionRecord": {
+      "title": "Revisão de Norma na Nuvem",
+      "description": "Versão histórica imutável de uma norma com observações de revisão.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "normaId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "numeroRevisao": {
+          "type": "number"
+        },
+        "titulo": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "observacao": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "autorNome": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "autorEmail": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "origem": {
+          "type": "string",
+          "enum": ["manual", "salvamento", "restauracao"]
+        },
+        "signature": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "resumoAlteracoes": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "docSnapshot": {
+          "type": "object"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "normaId",
+        "numeroRevisao",
+        "titulo",
+        "observacao",
+        "autorNome",
+        "autorEmail",
+        "origem",
+        "signature",
+        "resumoAlteracoes",
+        "docSnapshot",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AlteracaoCloudRecord": {
+      "title": "Ato Alterador (NR) na Nuvem",
+      "description": "Projeto de alteração de norma vigente conforme art. 12 da LC nº 95/1998.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "titulo": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 180
+        },
+        "meta": {
+          "type": "object"
+        },
+        "dispositivos": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "titulo",
+        "meta",
+        "dispositivos",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Perfis dos usuários com status de aprovação e papel de acesso."
+    },
+    "/allowlist/{emailKey}": {
+      "schema": { "$ref": "#/entities/AccessAllowlistEntry" },
+      "description": "E-mails pré-autorizados para ingresso imediato no sistema."
+    },
+    "/users/{userId}/normas/{normaId}": {
+      "schema": { "$ref": "#/entities/NormaCloudRecord" },
+      "description": "Minutas de decretos e normas pertencentes ao usuário aprovado."
+    },
+    "/users/{userId}/normas/{normaId}/revisoes/{revisaoId}": {
+      "schema": { "$ref": "#/entities/NormaRevisionRecord" },
+      "description": "Histórico de revisões e observações vinculadas a uma norma."
+    },
+    "/users/{userId}/alteracoes/{alteracaoId}": {
+      "schema": { "$ref": "#/entities/AlteracaoCloudRecord" },
+      "description": "Projetos de alteração normativa (NR) pertencentes ao usuário aprovado."
+    }
+  }
+}

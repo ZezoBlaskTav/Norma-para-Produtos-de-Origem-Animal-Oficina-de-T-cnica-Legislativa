@@ -1,0 +1,414 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Rede de segurança global: nega tudo por padrão
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidEmailKey(emailKey) {
+      return emailKey is string
+        && emailKey.size() >= 3
+        && emailKey.size() <= 180
+        && emailKey.matches('^[a-z0-9._%+\\-]+@[a-z0-9.\\-]+\\.[a-z]{2,}$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser()
+        && request.auth.token.email == 'joseluisblaskowskitavares@gmail.com';
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isVerifiedOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isPreAuthorizedEmail() {
+      return isVerifiedUser()
+        && request.auth.token.email is string
+        && exists(/databases/$(database)/documents/allowlist/$(request.auth.token.email.lower()));
+    }
+
+    function userProfileExists(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId));
+    }
+
+    function isApprovedUser(userId) {
+      return isVerifiedOwner(userId)
+        && (
+          isAdmin()
+          || (
+            userProfileExists(userId)
+            && get(/databases/$(database)/documents/users/$(userId)).data.status == 'aprovado'
+          )
+        );
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid', 'nomeCompleto', 'email', 'orgao', 'cargo',
+          'esferaPreferida', 'role', 'status', 'observacaoAcesso',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'nomeCompleto', 'email', 'orgao', 'cargo',
+          'esferaPreferida', 'role', 'status', 'observacaoAcesso',
+          'createdAt', 'updatedAt'
+        ])
+        && data.uid is string
+        && data.uid == userId
+        && data.nomeCompleto is string
+        && data.nomeCompleto.size() >= 2
+        && data.nomeCompleto.size() <= 120
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 180
+        && data.orgao is string
+        && data.orgao.size() <= 160
+        && data.cargo is string
+        && data.cargo.size() <= 120
+        && data.esferaPreferida is string
+        && data.esferaPreferida in ['Municipal', 'Estadual', 'Federal', 'Distrital']
+        && data.role is string
+        && data.role in ['user', 'admin']
+        && data.status is string
+        && data.status in ['pendente', 'aprovado', 'bloqueado']
+        && data.observacaoAcesso is string
+        && data.observacaoAcesso.size() <= 300
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAllowlistEntry(data, emailKey) {
+      return data.keys().hasAll([
+          'email', 'orgaoSugerido', 'observacao', 'addedByUid', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'email', 'orgaoSugerido', 'observacao', 'addedByUid', 'createdAt'
+        ])
+        && data.email is string
+        && data.email.lower() == emailKey
+        && data.email.size() >= 3
+        && data.email.size() <= 180
+        && data.orgaoSugerido is string
+        && data.orgaoSugerido.size() <= 160
+        && data.observacao is string
+        && data.observacao.size() <= 240
+        && data.addedByUid is string
+        && data.addedByUid == request.auth.uid
+        && data.createdAt is timestamp;
+    }
+
+    function isValidNormaRecord(data, userId) {
+      return data.keys().hasAll([
+          'ownerId', 'titulo', 'tipo', 'numero', 'data', 'esfera',
+          'autoridade', 'fundamentoLegal', 'ementa', 'ordemExecucao',
+          'artigos', 'vigenciaTipo', 'vigenciaDias', 'vigenciaData',
+          'revogacoes', 'localAssinatura', 'assinante', 'cargoAssinante',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'titulo', 'tipo', 'numero', 'data', 'esfera',
+          'autoridade', 'fundamentoLegal', 'ementa', 'ordemExecucao',
+          'artigos', 'vigenciaTipo', 'vigenciaDias', 'vigenciaData',
+          'revogacoes', 'localAssinatura', 'assinante', 'cargoAssinante',
+          'imagens', 'observacoes', 'createdAt', 'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && data.titulo is string
+        && data.titulo.size() >= 1
+        && data.titulo.size() <= 180
+        && data.tipo is string
+        && data.tipo in ['Decreto', 'Portaria', 'Instrução Normativa', 'Resolução', 'Norma Interna']
+        && data.numero is string && data.numero.size() <= 40
+        && data.data is string && data.data.size() <= 80
+        && data.esfera is string && data.esfera.size() <= 80
+        && data.autoridade is string && data.autoridade.size() <= 180
+        && data.fundamentoLegal is string && data.fundamentoLegal.size() <= 4000
+        && data.ementa is string && data.ementa.size() <= 2000
+        && data.ordemExecucao is string && data.ordemExecucao.size() <= 120
+        && data.artigos is list && data.artigos.size() <= 200
+        && (data.artigos.size() == 0 || data.artigos[0] is map)
+        && data.vigenciaTipo is string
+        && data.vigenciaTipo in ['imediata', 'dias', 'data_certa']
+        && data.vigenciaDias is number
+        && data.vigenciaDias >= 0
+        && data.vigenciaDias <= 36500
+        && data.vigenciaData is string && data.vigenciaData.size() <= 80
+        && data.revogacoes is list && data.revogacoes.size() <= 100
+        && (data.revogacoes.size() == 0 || data.revogacoes[0] is string)
+        && data.localAssinatura is string && data.localAssinatura.size() <= 160
+        && data.assinante is string && data.assinante.size() <= 120
+        && data.cargoAssinante is string && data.cargoAssinante.size() <= 120
+        && (!('imagens' in data) || (
+          data.imagens is list
+          && data.imagens.size() <= 10
+          && (data.imagens.size() == 0 || data.imagens[0] is map)
+        ))
+        && (!('observacoes' in data) || (
+          data.observacoes is string
+          && data.observacoes.size() <= 4000
+        ))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidNormaRevisionRecord(data, userId, normaId) {
+      return data.keys().hasAll([
+          'ownerId', 'normaId', 'numeroRevisao', 'titulo', 'observacao',
+          'autorNome', 'autorEmail', 'origem', 'signature',
+          'resumoAlteracoes', 'docSnapshot', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'normaId', 'numeroRevisao', 'titulo', 'observacao',
+          'autorNome', 'autorEmail', 'origem', 'signature',
+          'resumoAlteracoes', 'docSnapshot', 'createdAt', 'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && data.normaId is string
+        && data.normaId == normaId
+        && data.numeroRevisao is number
+        && data.numeroRevisao >= 1
+        && data.numeroRevisao <= 100000
+        && data.titulo is string
+        && data.titulo.size() >= 1
+        && data.titulo.size() <= 140
+        && data.observacao is string
+        && data.observacao.size() <= 2000
+        && data.autorNome is string
+        && data.autorNome.size() <= 120
+        && data.autorEmail is string
+        && data.autorEmail.size() <= 180
+        && data.origem is string
+        && data.origem in ['manual', 'salvamento', 'restauracao']
+        && data.signature is string
+        && data.signature.size() <= 64
+        && data.resumoAlteracoes is string
+        && data.resumoAlteracoes.size() <= 240
+        && data.docSnapshot is map
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAlteracaoRecord(data, userId) {
+      return data.keys().hasAll([
+          'ownerId', 'titulo', 'meta', 'dispositivos', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'titulo', 'meta', 'dispositivos', 'createdAt', 'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && data.titulo is string
+        && data.titulo.size() >= 1
+        && data.titulo.size() <= 180
+        && data.meta is map
+        && data.dispositivos is list && data.dispositivos.size() <= 200
+        && (data.dispositivos.size() == 0 || data.dispositivos[0] is map)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Lista de e-mails pré-autorizados pelo administrador
+    match /allowlist/{emailKey} {
+      allow get: if isValidEmailKey(emailKey)
+        && (
+          isAdmin()
+          || (isVerifiedUser() && request.auth.token.email is string && request.auth.token.email.lower() == emailKey)
+        );
+      allow list: if isAdmin();
+      allow create, update: if isValidEmailKey(emailKey)
+        && isAdmin()
+        && isValidAllowlistEntry(incoming(), emailKey)
+        && incoming().createdAt == request.time;
+      allow delete: if isValidEmailKey(emailKey) && isAdmin();
+    }
+
+    // Perfis de usuários e controle de liberação de acesso
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin()
+        || (isSignedIn() && resource.data.uid == request.auth.uid);
+
+      allow create: if isValidId(userId)
+        && isVerifiedOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && incoming().role == 'admin' && incoming().status == 'aprovado')
+          || (
+            incoming().role == 'user'
+            && (
+              (isPreAuthorizedEmail() && incoming().status == 'aprovado')
+              || incoming().status == 'pendente'
+            )
+          )
+        );
+
+      allow update: if isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Ação do administrador: aprovar, bloquear ou editar metadados de acesso
+          (
+            isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'role', 'observacaoAcesso', 'nomeCompleto', 'email',
+              'orgao', 'cargo', 'esferaPreferida', 'updatedAt'
+            ])
+          )
+          // Ação do próprio titular: atualizar apenas dados cadastrais
+          || (
+            isVerifiedOwner(userId)
+            && incoming().status == existing().status
+            && incoming().role == existing().role
+            && incoming().observacaoAcesso == existing().observacaoAcesso
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'nomeCompleto', 'email', 'orgao', 'cargo', 'esferaPreferida', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if false;
+
+      // Normas estruturadas (restritas a usuários aprovados ou administrador)
+      match /normas/{normaId} {
+        allow get: if isValidId(userId) && isValidId(normaId) && isApprovedUser(userId);
+        allow list: if isOwner(userId) && resource.data.ownerId == request.auth.uid;
+
+        allow create: if isValidId(userId)
+          && isValidId(normaId)
+          && isApprovedUser(userId)
+          && isValidNormaRecord(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && userProfileExists(userId);
+
+        allow update: if isValidId(userId)
+          && isValidId(normaId)
+          && isApprovedUser(userId)
+          && isValidNormaRecord(incoming(), userId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'titulo', 'tipo', 'numero', 'data', 'esfera', 'autoridade',
+            'fundamentoLegal', 'ementa', 'ordemExecucao', 'artigos',
+            'vigenciaTipo', 'vigenciaDias', 'vigenciaData', 'revogacoes',
+            'localAssinatura', 'assinante', 'cargoAssinante', 'imagens',
+            'observacoes', 'updatedAt'
+          ]);
+
+        allow delete: if isValidId(userId)
+          && isValidId(normaId)
+          && isApprovedUser(userId);
+
+        // Histórico de revisões por norma
+        match /revisoes/{revisaoId} {
+          allow get: if isValidId(userId)
+            && isValidId(normaId)
+            && isValidId(revisaoId)
+            && isApprovedUser(userId);
+          allow list: if isOwner(userId)
+            && resource.data.ownerId == request.auth.uid
+            && resource.data.normaId == normaId;
+
+          allow create: if isValidId(userId)
+            && isValidId(normaId)
+            && isValidId(revisaoId)
+            && isApprovedUser(userId)
+            && isValidNormaRevisionRecord(incoming(), userId, normaId)
+            && incoming().createdAt == request.time
+            && incoming().updatedAt == request.time
+            && exists(/databases/$(database)/documents/users/$(userId)/normas/$(normaId));
+
+          allow update: if isValidId(userId)
+            && isValidId(normaId)
+            && isValidId(revisaoId)
+            && isApprovedUser(userId)
+            && isValidNormaRevisionRecord(incoming(), userId, normaId)
+            && incoming().ownerId == existing().ownerId
+            && incoming().normaId == existing().normaId
+            && incoming().numeroRevisao == existing().numeroRevisao
+            && incoming().autorNome == existing().autorNome
+            && incoming().autorEmail == existing().autorEmail
+            && incoming().origem == existing().origem
+            && incoming().signature == existing().signature
+            && incoming().resumoAlteracoes == existing().resumoAlteracoes
+            && incoming().docSnapshot == existing().docSnapshot
+            && incoming().createdAt == existing().createdAt
+            && incoming().updatedAt == request.time
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'titulo', 'observacao', 'updatedAt'
+            ]);
+
+          allow delete: if isValidId(userId)
+            && isValidId(normaId)
+            && isValidId(revisaoId)
+            && isApprovedUser(userId);
+        }
+      }
+
+      // Atos alteradores (NR) (restritos a usuários aprovados ou administrador)
+      match /alteracoes/{alteracaoId} {
+        allow get: if isValidId(userId) && isValidId(alteracaoId) && isApprovedUser(userId);
+        allow list: if isOwner(userId) && resource.data.ownerId == request.auth.uid;
+
+        allow create: if isValidId(userId)
+          && isValidId(alteracaoId)
+          && isApprovedUser(userId)
+          && isValidAlteracaoRecord(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && userProfileExists(userId);
+
+        allow update: if isValidId(userId)
+          && isValidId(alteracaoId)
+          && isApprovedUser(userId)
+          && isValidAlteracaoRecord(incoming(), userId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'titulo', 'meta', 'dispositivos', 'updatedAt'
+          ]);
+
+        allow delete: if isValidId(userId)
+          && isValidId(alteracaoId)
+          && isApprovedUser(userId);
+      }
+    }
+  }
+}
