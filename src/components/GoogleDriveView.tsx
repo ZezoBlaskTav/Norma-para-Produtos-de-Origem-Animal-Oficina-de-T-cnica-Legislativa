@@ -50,9 +50,13 @@ import {
   DatabaseRecordKind,
   DriveDbEntry,
   NormaDatabaseRecord,
+  buildNormaFolderName,
+  buildNormaImagesFolderName,
   createDriveDatabaseRecord,
+  ensureNormaMinutaFolder,
   listDriveDatabaseEntries,
   readDriveDatabaseRecord,
+  syncNormaImagesToDriveFolder,
   updateDriveDatabaseRecord,
 } from '../utils/driveDatabase';
 import { LocalRecoveryPoint } from '../utils/localPersistence';
@@ -79,6 +83,7 @@ interface GoogleDriveViewProps {
   onSignOut: () => void;
   onTokenExpired: () => void;
   doc: NormaDocument;
+  activeCloudNormaId?: string;
   altMeta: AlteracaoMetadata;
   alteracoes: AlteracaoDispositivo[];
   auditText: string;
@@ -150,6 +155,7 @@ export const GoogleDriveView: React.FC<GoogleDriveViewProps> = ({
   onSignOut,
   onTokenExpired,
   doc,
+  activeCloudNormaId,
   altMeta,
   alteracoes,
   auditText,
@@ -186,6 +192,9 @@ export const GoogleDriveView: React.FC<GoogleDriveViewProps> = ({
     getSuggestedFileBaseName(`${doc.tipo}-${doc.numero || 'minuta'}`)
   );
 
+  const [syncImagesOnSave, setSyncImagesOnSave] = useState(true);
+  const [exportIntoMinutaFolder, setExportIntoMinutaFolder] = useState(true);
+
   const [busyAction, setBusyAction] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -194,6 +203,21 @@ export const GoogleDriveView: React.FC<GoogleDriveViewProps> = ({
   );
   const [copiedDomain, setCopiedDomain] = useState(false);
   const [showLocalHistory, setShowLocalHistory] = useState(false);
+
+  const validDocImagesCount = useMemo(
+    () =>
+      (doc.imagens || []).filter(
+        (img) =>
+          typeof img.dataUrl === 'string' && img.dataUrl.startsWith('data:image/')
+      ).length,
+    [doc.imagens]
+  );
+
+  const minutaFolderLabel = useMemo(() => buildNormaFolderName(doc), [doc]);
+  const imagesFolderLabel = useMemo(
+    () => buildNormaImagesFolderName(doc),
+    [doc]
+  );
 
   useEffect(() => {
     const base =
@@ -354,10 +378,21 @@ export const GoogleDriveView: React.FC<GoogleDriveViewProps> = ({
         savedAt: record.savedAt,
       });
 
+      let imageSummary = '';
+      if (syncImagesOnSave && dbKind !== 'alteracao' && validDocImagesCount > 0) {
+        const imgSync = await syncNormaImagesToDriveFolder(token, {
+          normaId: activeCloudNormaId || doc.id,
+          doc,
+          rootFolderId: folder.id,
+        });
+        imageSummary = ` Imagens salvas na pasta "${imgSync.minutaFolder.name} / ${imgSync.imagesFolder?.name || imagesFolderLabel}" (${imgSync.uploadedImagesCount} nova(s), ${imgSync.skippedImagesCount} já existente(s)).`;
+      }
+
       setStatusMessage(
-        isSnapshot
+        (isSnapshot
           ? `Ponto de restauração "${created.name}" salvo na pasta "${DRIVE_DB_FOLDER_NAME}".`
-          : `Registro "${record.titulo}" salvo no Banco de Dados do Google Drive.`
+          : `Registro "${record.titulo}" salvo no Banco de Dados do Google Drive.`) +
+          imageSummary
       );
       await fetchDatabase();
       await fetchFiles();
@@ -474,16 +509,42 @@ export const GoogleDriveView: React.FC<GoogleDriveViewProps> = ({
     setStatusMessage(null);
     try {
       const payload = await buildPayloadForUpload(saveFormat);
+      let targetParents: string[] | undefined;
+      let folderMessage = '';
+
+      if (saveSource === 'editor' && (exportIntoMinutaFolder || (syncImagesOnSave && validDocImagesCount > 0))) {
+        const rootId = dbFolder?.id;
+        const ensured = await ensureNormaMinutaFolder(token, {
+          normaId: activeCloudNormaId || doc.id,
+          doc,
+          rootFolderId: rootId,
+        });
+        if (exportIntoMinutaFolder) {
+          targetParents = [ensured.minutaFolder.id];
+          folderMessage = ` dentro da pasta "${ensured.minutaFolder.name}"`;
+        }
+        if (syncImagesOnSave && validDocImagesCount > 0) {
+          const imgSync = await syncNormaImagesToDriveFolder(token, {
+            normaId: activeCloudNormaId || doc.id,
+            doc,
+            rootFolderId: ensured.rootFolderId,
+            minutaFolder: ensured.minutaFolder,
+          });
+          folderMessage += ` e ${imgSync.totalImagesCount} imagem(ns) organizada(s) na subpasta "${imgSync.imagesFolder?.name || imagesFolderLabel}" (${imgSync.uploadedImagesCount} nova(s))`;
+        }
+      }
+
       const created = await uploadNewDriveFile(token, {
         name: payload.fileName,
         blob: payload.blob,
         uploadMimeType: payload.uploadMimeType,
         targetDriveMimeType: payload.targetDriveMimeType,
+        parents: targetParents,
         description:
           'Ato normativo elaborado na Oficina de Técnica Legislativa Norma.',
       });
       setStatusMessage(
-        `Arquivo "${created.name}" salvo com sucesso no Google Drive.`
+        `Arquivo "${created.name}" salvo com sucesso no Google Drive${folderMessage}.`
       );
       await fetchFiles();
     } catch (err) {
@@ -584,8 +645,17 @@ export const GoogleDriveView: React.FC<GoogleDriveViewProps> = ({
           titulo: record.titulo,
           savedAt: record.savedAt,
         });
+        let imgMsg = '';
+        if (syncImagesOnSave && dbKind !== 'alteracao' && validDocImagesCount > 0) {
+          const imgSync = await syncNormaImagesToDriveFolder(token, {
+            normaId: activeCloudNormaId || doc.id,
+            doc,
+            rootFolderId: dbFolder?.id,
+          });
+          imgMsg = ` Imagens sincronizadas em "${imgSync.minutaFolder.name} / ${imgSync.imagesFolder?.name || imagesFolderLabel}" (${imgSync.uploadedImagesCount} nova(s), ${imgSync.skippedImagesCount} já existente(s)).`;
+        }
         setStatusMessage(
-          `Registro "${record.titulo}" atualizado no Banco de Dados do Google Drive.`
+          `Registro "${record.titulo}" atualizado no Banco de Dados do Google Drive.${imgMsg}`
         );
       }
       setPendingAction(null);
@@ -1044,6 +1114,28 @@ export const GoogleDriveView: React.FC<GoogleDriveViewProps> = ({
             </div>
           </div>
 
+          {dbKind !== 'alteracao' && validDocImagesCount > 0 && (
+            <label className="flex items-start gap-2 text-xs text-slate-700 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={syncImagesOnSave}
+                onChange={(e) => setSyncImagesOnSave(e.target.checked)}
+                className="mt-0.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+              />
+              <span>
+                Enviar também as <strong>{validDocImagesCount}</strong>{' '}
+                {validDocImagesCount === 1
+                  ? 'imagem anexada'
+                  : 'imagens anexadas'}{' '}
+                para a pasta da minuta (
+                <span className="font-mono text-[11px]">
+                  {minutaFolderLabel} / {imagesFolderLabel}
+                </span>
+                )
+              </span>
+            </label>
+          )}
+
           <div className="flex flex-wrap items-center gap-2.5">
             <button
               type="button"
@@ -1297,6 +1389,47 @@ export const GoogleDriveView: React.FC<GoogleDriveViewProps> = ({
               <span>{busyAction ? 'Enviando...' : 'Enviar'}</span>
             </button>
           </div>
+
+          {saveSource === 'editor' && (
+            <div className="md:col-span-12 pt-1 space-y-1.5">
+              <label className="flex items-start gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={exportIntoMinutaFolder}
+                  onChange={(e) => setExportIntoMinutaFolder(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+                />
+                <span>
+                  Organizar dentro da pasta da minuta (
+                  <span className="font-mono text-[11px]">
+                    {DRIVE_DB_FOLDER_NAME} / {minutaFolderLabel}
+                  </span>
+                  )
+                </span>
+              </label>
+
+              {validDocImagesCount > 0 && (
+                <label className="flex items-start gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={syncImagesOnSave}
+                    onChange={(e) => setSyncImagesOnSave(e.target.checked)}
+                    className="mt-0.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+                  />
+                  <span>
+                    Salvar também as <strong>{validDocImagesCount}</strong>{' '}
+                    {validDocImagesCount === 1
+                      ? 'imagem anexada'
+                      : 'imagens anexadas'}{' '}
+                    na subpasta{' '}
+                    <span className="font-mono text-[11px]">
+                      {imagesFolderLabel}
+                    </span>
+                  </span>
+                </label>
+              )}
+            </div>
+          )}
         </form>
       </section>
 

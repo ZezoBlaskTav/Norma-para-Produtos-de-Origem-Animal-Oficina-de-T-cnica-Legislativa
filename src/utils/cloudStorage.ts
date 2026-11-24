@@ -81,6 +81,43 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
+export function isFirestoreQuotaError(error: unknown): boolean {
+  const raw =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : JSON.stringify(error ?? '');
+  return (
+    raw.includes('resource-exhausted') ||
+    raw.includes('Quota limit exceeded') ||
+    raw.includes('Quota exceeded') ||
+    raw.includes('Free daily write units') ||
+    raw.includes('Free daily read units')
+  );
+}
+
+export function formatCloudSyncErrorMessage(
+  error: unknown,
+  fallback: string
+): string {
+  if (isFirestoreQuotaError(error)) {
+    return 'Cota diária gratuita de gravações na nuvem (Firestore) atingida hoje. Suas edições continuam sendo salvas localmente neste navegador e a nuvem será liberada automaticamente amanhã.';
+  }
+  if (error instanceof Error) {
+    try {
+      const parsed = JSON.parse(error.message) as { error?: string };
+      if (parsed && typeof parsed.error === 'string' && parsed.error.trim()) {
+        return parsed.error;
+      }
+    } catch {
+      // Mensagem já legível
+    }
+    return error.message || fallback;
+  }
+  return fallback;
+}
+
 export type EsferaPreferida = 'Municipal' | 'Estadual' | 'Federal' | 'Distrital';
 export type UserRole = 'user' | 'admin';
 export type UserAccessStatus = 'pendente' | 'aprovado' | 'bloqueado';

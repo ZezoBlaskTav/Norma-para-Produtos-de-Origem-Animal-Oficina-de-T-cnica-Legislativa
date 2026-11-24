@@ -78,13 +78,40 @@ export async function listDriveFiles(
 export async function findOrCreateDriveFolder(
   accessToken: string,
   folderName: string,
-  appRole: string
+  appRole: string,
+  options?: {
+    parentId?: string;
+    matchProperty?: { key: string; value: string };
+    description?: string;
+  }
 ): Promise<DriveFileItem> {
   const escapedName = folderName.replace(/'/g, "\\'");
-  const q = `mimeType = 'application/vnd.google-apps.folder' and trashed = false and (appProperties has { key='normaAppRole' and value='${appRole}' } or name = '${escapedName}')`;
+  const clauses: string[] = [
+    "mimeType = 'application/vnd.google-apps.folder'",
+    'trashed = false',
+  ];
+
+  if (options?.parentId) {
+    const escapedParent = options.parentId.replace(/'/g, "\\'");
+    clauses.push(`'${escapedParent}' in parents`);
+  }
+
+  if (options?.matchProperty) {
+    const escapedKey = options.matchProperty.key.replace(/'/g, "\\'");
+    const escapedVal = options.matchProperty.value.replace(/'/g, "\\'");
+    const escapedRole = appRole.replace(/'/g, "\\'");
+    clauses.push(
+      `((appProperties has { key='normaAppRole' and value='${escapedRole}' } and appProperties has { key='${escapedKey}' and value='${escapedVal}' }) or name = '${escapedName}')`
+    );
+  } else {
+    const escapedRole = appRole.replace(/'/g, "\\'");
+    clauses.push(
+      `(appProperties has { key='normaAppRole' and value='${escapedRole}' } or name = '${escapedName}')`
+    );
+  }
 
   const params = new URLSearchParams({
-    q,
+    q: clauses.join(' and '),
     pageSize: '5',
     orderBy: 'modifiedTime desc',
     fields:
@@ -104,6 +131,25 @@ export async function findOrCreateDriveFolder(
     return found.files[0];
   }
 
+  const appProperties: Record<string, string> = {
+    normaAppRole: appRole,
+  };
+  if (options?.matchProperty) {
+    appProperties[options.matchProperty.key] = options.matchProperty.value;
+  }
+
+  const body: Record<string, unknown> = {
+    name: folderName,
+    mimeType: 'application/vnd.google-apps.folder',
+    description:
+      options?.description ||
+      'Banco de dados e cópias de segurança da Oficina Legislativa Norma.',
+    appProperties,
+  };
+  if (options?.parentId) {
+    body.parents = [options.parentId];
+  }
+
   const createRes = await fetch(
     `${DRIVE_API_BASE}/files?fields=id,name,mimeType,modifiedTime,webViewLink,description,appProperties`,
     {
@@ -112,15 +158,7 @@ export async function findOrCreateDriveFolder(
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        name: folderName,
-        mimeType: 'application/vnd.google-apps.folder',
-        description:
-          'Banco de dados e cópias de segurança da Oficina Legislativa Norma.',
-        appProperties: {
-          normaAppRole: appRole,
-        },
-      }),
+      body: JSON.stringify(body),
     }
   );
 

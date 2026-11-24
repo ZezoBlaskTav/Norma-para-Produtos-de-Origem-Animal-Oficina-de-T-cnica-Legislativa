@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
@@ -10,9 +12,11 @@ import {
   Copy,
   CopyPlus,
   Download,
+  ExternalLink,
   Eye,
   FileEdit,
   FolderOpen,
+  HardDrive,
   Highlighter,
   History,
   ImagePlus,
@@ -85,6 +89,14 @@ import {
   RevisorLinguisticoPanel,
 } from './RevisorLinguisticoPanel';
 import { HistoricoRevisoesPanel } from './HistoricoRevisoesPanel';
+import { AuthErrorInfo, getAccessToken } from '../utils/googleAuth';
+import {
+  DRIVE_DB_FOLDER_NAME,
+  SaveNormaCopyToDriveOptions,
+  SaveNormaCopyToDriveResult,
+  buildNormaFolderName,
+  buildNormaImagesFolderName,
+} from '../utils/driveDatabase';
 
 interface EditorEstruturadoViewProps {
   doc: NormaDocument;
@@ -115,6 +127,13 @@ interface EditorEstruturadoViewProps {
     snapshotDoc: NormaDocument,
     sourceLabel: string
   ) => Promise<void>;
+  needsDriveAuth: boolean;
+  driveLoggingIn: boolean;
+  driveAuthError: AuthErrorInfo | null;
+  onConnectGoogleDrive: () => Promise<void>;
+  onSaveNormaCopyToDrive: (
+    options: Omit<SaveNormaCopyToDriveOptions, 'normaId' | 'doc' | 'savedByEmail'>
+  ) => Promise<SaveNormaCopyToDriveResult>;
 }
 
 type EditorLayoutMode = 'dividido' | 'editor' | 'previa';
@@ -271,6 +290,11 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
   onUpdateRevisionNote,
   onDeleteRevision,
   onRestoreWholeRevision,
+  needsDriveAuth,
+  driveLoggingIn,
+  driveAuthError,
+  onConnectGoogleDrive,
+  onSaveNormaCopyToDrive,
 }) => {
   const [copied, setCopied] = useState(false);
   const [layoutMode, setLayoutMode] = useState<EditorLayoutMode>('dividido');
@@ -314,6 +338,44 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
   const [saveFeedback, setSaveFeedback] = useState<'idle' | 'saved' | 'cloned'>('idle');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const [driveCopyModalOpen, setDriveCopyModalOpen] = useState(false);
+  const [driveHasSessionToken, setDriveHasSessionToken] = useState(false);
+  const [driveCopyIncludeDbRecord, setDriveCopyIncludeDbRecord] = useState(true);
+  const [driveCopyIncludeDocx, setDriveCopyIncludeDocx] = useState(true);
+  const [driveCopyIncludePdf, setDriveCopyIncludePdf] = useState(false);
+  const [driveCopyIncludeImages, setDriveCopyIncludeImages] = useState(true);
+  const [driveCopyBusy, setDriveCopyBusy] = useState(false);
+  const [driveCopyError, setDriveCopyError] = useState<string | null>(null);
+  const [driveCopyResult, setDriveCopyResult] =
+    useState<SaveNormaCopyToDriveResult | null>(null);
+
+  const validImagesCount = useMemo(
+    () =>
+      (doc.imagens || []).filter(
+        (img) =>
+          typeof img.dataUrl === 'string' && img.dataUrl.startsWith('data:image/')
+      ).length,
+    [doc.imagens]
+  );
+
+  const minutaFolderPreviewName = useMemo(() => buildNormaFolderName(doc), [doc]);
+  const imagesFolderPreviewName = useMemo(
+    () => buildNormaImagesFolderName(doc),
+    [doc]
+  );
+
+  const refreshDriveTokenAvailability = useCallback(async () => {
+    const token = await getAccessToken();
+    setDriveHasSessionToken(Boolean(token));
+    return Boolean(token);
+  }, []);
+
+  useEffect(() => {
+    if (driveCopyModalOpen) {
+      void refreshDriveTokenAvailability();
+    }
+  }, [driveCopyModalOpen, needsDriveAuth, refreshDriveTokenAvailability]);
 
   const { spellChecker, addToDictionary, nativeFieldProps } = useSpellcheck();
 
@@ -1248,6 +1310,55 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
     }
   };
 
+  const handleOpenDriveCopyModal = () => {
+    setDriveCopyError(null);
+    setDriveCopyResult(null);
+    setDriveCopyModalOpen(true);
+    void refreshDriveTokenAvailability();
+  };
+
+  const handleConnectDriveInModal = async () => {
+    setDriveCopyError(null);
+    await onConnectGoogleDrive();
+    await refreshDriveTokenAvailability();
+  };
+
+  const handleConfirmSaveDriveCopy = async () => {
+    if (driveCopyBusy) return;
+    const hasAnyTarget =
+      driveCopyIncludeDbRecord ||
+      driveCopyIncludeDocx ||
+      driveCopyIncludePdf ||
+      (driveCopyIncludeImages && validImagesCount > 0);
+    if (!hasAnyTarget) {
+      setDriveCopyError(
+        'Selecione pelo menos um arquivo ou pasta de imagens para enviar ao Google Drive.'
+      );
+      return;
+    }
+
+    setDriveCopyBusy(true);
+    setDriveCopyError(null);
+    try {
+      const result = await onSaveNormaCopyToDrive({
+        includeEditableRecord: driveCopyIncludeDbRecord,
+        includeDocx: driveCopyIncludeDocx,
+        includePdf: driveCopyIncludePdf,
+        includeImagesFolder: driveCopyIncludeImages,
+      });
+      setDriveCopyResult(result);
+    } catch (err) {
+      await refreshDriveTokenAvailability();
+      setDriveCopyError(
+        err instanceof Error
+          ? err.message
+          : 'Não foi possível salvar a cópia no Google Drive.'
+      );
+    } finally {
+      setDriveCopyBusy(false);
+    }
+  };
+
   const formatSavedDate = (iso?: string): string => {
     if (!iso) return 'Agora';
     const d = new Date(iso);
@@ -1556,7 +1667,9 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                 {savingNow || cloudSyncStatus === 'saving'
                   ? 'Salvando...'
                   : saveFeedback === 'saved'
-                    ? 'Decreto salvo'
+                    ? cloudSyncStatus === 'error'
+                      ? 'Salvo localmente'
+                      : 'Decreto salvo'
                     : 'Salvar decreto'}
               </span>
             </button>
@@ -1599,6 +1712,16 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               ) : (
                 <ChevronRight className="w-3.5 h-3.5 shrink-0" />
               )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleOpenDriveCopyModal}
+              title="Salvar uma cópia desta minuta no Google Drive com pasta dedicada e subpasta para imagens"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-md transition-colors whitespace-nowrap shrink-0"
+            >
+              <HardDrive className="w-3.5 h-3.5 shrink-0" />
+              <span>Cópia no Drive</span>
             </button>
           </div>
 
@@ -1729,6 +1852,25 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
             </button>
           </div>
         </div>
+
+        {cloudSyncStatus === 'error' && cloudSyncError && (
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-md flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs text-amber-950 leading-relaxed">
+            <div>
+              <strong>Salvamento local ativo (nuvem pausada):</strong>{' '}
+              {cloudSyncError} Enquanto isso, você pode continuar editando,
+              exportar ou salvar uma cópia no Google Drive com pasta para
+              imagens.
+            </div>
+            <button
+              type="button"
+              onClick={handleOpenDriveCopyModal}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-950 bg-white border border-amber-300 hover:bg-amber-100 rounded-md transition-colors whitespace-nowrap shrink-0 self-start sm:self-auto"
+            >
+              <HardDrive className="w-3.5 h-3.5 shrink-0" />
+              <span>Salvar cópia no Google Drive</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {savedLibraryOpen && (
@@ -1756,8 +1898,8 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
           </div>
 
           {cloudSyncError && (
-            <div className="px-5 py-2.5 bg-red-50 border-b border-red-200 text-xs text-red-800">
-              Não foi possível concluir o último salvamento na nuvem. Seus dados locais permanecem protegidos abaixo.
+            <div className="px-5 py-2.5 bg-amber-50 border-b border-amber-200 text-xs text-amber-950">
+              {cloudSyncError}
             </div>
           )}
 
@@ -4158,6 +4300,249 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* Modal de Confirmação: Salvar cópia no Google Drive + Pasta de Imagens */}
+      {driveCopyModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="editor-drive-copy-title"
+          className="no-print fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50"
+        >
+          <div className="bg-white border border-slate-200 rounded-lg max-w-lg w-full p-6 space-y-5 shadow-lg">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <HardDrive className="w-5 h-5 text-slate-800 shrink-0 mt-0.5" />
+                <div>
+                  <h3
+                    id="editor-drive-copy-title"
+                    className="text-base font-semibold text-slate-900"
+                  >
+                    Salvar cópia no Google Drive
+                  </h3>
+                  <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+                    Cria uma cópia da minuta atual e organiza as imagens
+                    anexadas em uma pasta vinculada à norma.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDriveCopyModalOpen(false)}
+                disabled={driveCopyBusy}
+                aria-label="Fechar janela de cópia no Google Drive"
+                className="p-1 text-slate-400 hover:text-slate-700 rounded"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-md space-y-1.5 text-xs text-slate-700">
+              <div className="font-semibold text-slate-900">
+                Estrutura de pastas no Google Drive
+              </div>
+              <div>
+                Raiz:{' '}
+                <span className="font-mono text-[11px] bg-white px-1.5 py-0.5 border border-slate-200 rounded">
+                  {DRIVE_DB_FOLDER_NAME}
+                </span>
+              </div>
+              <div>
+                Pasta da minuta:{' '}
+                <span className="font-mono text-[11px] bg-white px-1.5 py-0.5 border border-slate-200 rounded">
+                  {minutaFolderPreviewName}
+                </span>
+              </div>
+              <div>
+                Pasta das imagens:{' '}
+                <span className="font-mono text-[11px] bg-white px-1.5 py-0.5 border border-slate-200 rounded">
+                  {imagesFolderPreviewName}
+                </span>{' '}
+                <span className="text-slate-500 tabular-nums">
+                  ({validImagesCount}{' '}
+                  {validImagesCount === 1
+                    ? 'imagem anexada'
+                    : 'imagens anexadas'}
+                  )
+                </span>
+              </div>
+            </div>
+
+            {(!driveHasSessionToken || needsDriveAuth) && !driveCopyResult ? (
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-md space-y-3">
+                <div className="flex items-start gap-2 text-xs text-amber-950 leading-relaxed">
+                  <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                  <span>
+                    Autorize o acesso ao Google Drive na sua conta para gravar a
+                    cópia desta minuta e enviar as imagens anexadas sem sair do
+                    editor.
+                  </span>
+                </div>
+                {driveAuthError && (
+                  <p className="text-xs text-red-700">{driveAuthError.message}</p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void handleConnectDriveInModal()}
+                  disabled={driveLoggingIn}
+                  className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 rounded-md whitespace-nowrap"
+                >
+                  <HardDrive className="w-3.5 h-3.5" />
+                  <span>
+                    {driveLoggingIn
+                      ? 'Conectando ao Google...'
+                      : 'Conectar Google Drive'}
+                  </span>
+                </button>
+              </div>
+            ) : driveCopyResult ? (
+              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-md space-y-3 text-xs text-emerald-950">
+                <div className="flex items-start gap-2 font-medium">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                  <span>
+                    Cópia salva no Google Drive com sucesso.
+                    {driveCopyResult.totalImagesCount > 0
+                      ? ` Imagens: ${driveCopyResult.uploadedImagesCount} nova(s) enviada(s), ${driveCopyResult.skippedImagesCount} já existente(s).`
+                      : ''}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {driveCopyResult.minutaFolder.webViewLink && (
+                    <a
+                      href={driveCopyResult.minutaFolder.webViewLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-900 bg-white border border-emerald-300 hover:bg-emerald-100 rounded-md whitespace-nowrap"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Abrir pasta da minuta</span>
+                    </a>
+                  )}
+                  {driveCopyResult.imagesFolder?.webViewLink && (
+                    <a
+                      href={driveCopyResult.imagesFolder.webViewLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-900 bg-white border border-emerald-300 hover:bg-emerald-100 rounded-md whitespace-nowrap"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Abrir pasta das imagens</span>
+                    </a>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2.5 text-xs text-slate-700">
+                <div className="font-medium text-slate-900">
+                  Itens que serão salvos nesta cópia:
+                </div>
+
+                <label className="flex items-start gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={driveCopyIncludeDbRecord}
+                    onChange={(e) =>
+                      setDriveCopyIncludeDbRecord(e.target.checked)
+                    }
+                    className="mt-0.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+                  />
+                  <span>
+                    Cópia editável de backup (
+                    <span className="font-mono text-[11px]">.norma-db.json</span>
+                    ) no Banco de Dados Legislativo para restaurar no editor
+                  </span>
+                </label>
+
+                <label className="flex items-start gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={driveCopyIncludeDocx}
+                    onChange={(e) => setDriveCopyIncludeDocx(e.target.checked)}
+                    className="mt-0.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+                  />
+                  <span>
+                    Documento Word (
+                    <span className="font-mono text-[11px]">.docx</span>) dentro
+                    da pasta da minuta
+                  </span>
+                </label>
+
+                <label className="flex items-start gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={driveCopyIncludePdf}
+                    onChange={(e) => setDriveCopyIncludePdf(e.target.checked)}
+                    className="mt-0.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+                  />
+                  <span>
+                    Cópia em PDF (<span className="font-mono text-[11px]">.pdf</span>
+                    ) dentro da pasta da minuta
+                  </span>
+                </label>
+
+                <label
+                  className={`flex items-start gap-2 select-none ${
+                    validImagesCount === 0
+                      ? 'opacity-50 cursor-not-allowed'
+                      : 'cursor-pointer'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={driveCopyIncludeImages && validImagesCount > 0}
+                    disabled={validImagesCount === 0}
+                    onChange={(e) =>
+                      setDriveCopyIncludeImages(e.target.checked)
+                    }
+                    className="mt-0.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+                  />
+                  <span>
+                    {validImagesCount > 0
+                      ? `Salvar ${validImagesCount} ${
+                          validImagesCount === 1
+                            ? 'imagem anexada'
+                            : 'imagens anexadas'
+                        } na subpasta "${imagesFolderPreviewName}" (sem duplicar as já enviadas)`
+                      : 'Nenhuma imagem anexada nesta minuta no momento'}
+                  </span>
+                </label>
+              </div>
+            )}
+
+            {driveCopyError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-md text-xs text-red-800">
+                {driveCopyError}
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setDriveCopyModalOpen(false)}
+                disabled={driveCopyBusy}
+                className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-md whitespace-nowrap"
+              >
+                {driveCopyResult ? 'Fechar' : 'Cancelar'}
+              </button>
+              {!driveCopyResult && driveHasSessionToken && !needsDriveAuth && (
+                <button
+                  type="button"
+                  onClick={() => void handleConfirmSaveDriveCopy()}
+                  disabled={driveCopyBusy}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 rounded-md whitespace-nowrap"
+                >
+                  <HardDrive className="w-3.5 h-3.5" />
+                  <span>
+                    {driveCopyBusy
+                      ? 'Salvando cópia...'
+                      : 'Confirmar e salvar cópia'}
+                  </span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
