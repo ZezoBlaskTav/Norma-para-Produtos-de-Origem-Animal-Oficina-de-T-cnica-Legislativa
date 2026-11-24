@@ -24,6 +24,7 @@ import {
   IMAGE_WIDTH_STEPS_MM,
   MAX_IMAGES_PER_NORMA,
   MAX_TOTAL_IMAGES_CHARS,
+  estimateCharsSizeKb,
   estimateTotalImagesChars,
   generateSampleInspectionStamp,
   processUploadedImageFile,
@@ -113,18 +114,17 @@ export const NormaImagensSection: React.FC<NormaImagensSectionProps> = ({
   const [busyUpload, setBusyUpload] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const totalBytesKb = Math.round(
-    (estimateTotalImagesChars(imagens) * 0.75) / 1024
-  );
-  const maxBytesKb = Math.round((MAX_TOTAL_IMAGES_CHARS * 0.75) / 1024);
+  const totalChars = estimateTotalImagesChars(imagens);
+  const totalBytesKb = estimateCharsSizeKb(totalChars);
+  const maxBytesKb = estimateCharsSizeKb(MAX_TOTAL_IMAGES_CHARS);
 
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
     setErrorMsg(null);
     setBusyUpload(true);
 
+    let working = [...imagens];
     try {
-      let working = [...imagens];
       for (const file of Array.from(fileList)) {
         const processed = await processUploadedImageFile(file, working);
         const cleanName = file.name
@@ -152,6 +152,9 @@ export const NormaImagensSection: React.FC<NormaImagensSectionProps> = ({
       }
       onChange(working);
     } catch (err) {
+      if (working.length > imagens.length) {
+        onChange(working);
+      }
       setErrorMsg(
         err instanceof Error
           ? err.message
@@ -178,8 +181,12 @@ export const NormaImagensSection: React.FC<NormaImagensSectionProps> = ({
       const processed = generateSampleInspectionStamp();
       const totalChars = estimateTotalImagesChars(imagens);
       if (totalChars + processed.dataUrl.length > MAX_TOTAL_IMAGES_CHARS) {
+        const remainingKb = estimateCharsSizeKb(
+          Math.max(0, MAX_TOTAL_IMAGES_CHARS - totalChars)
+        );
+        const stampKb = estimateCharsSizeKb(processed.dataUrl.length);
         setErrorMsg(
-          'Espaço total de imagens nesta norma atingido. Remova alguma imagem existente antes de inserir outra.'
+          `O modelo de carimbo (${stampKb} KB) excede o espaço restante nesta norma (${remainingKb} KB de ${maxBytesKb} KB disponíveis). Remova alguma imagem existente antes de inserir outra.`
         );
         return;
       }
@@ -375,7 +382,8 @@ export const NormaImagensSection: React.FC<NormaImagensSectionProps> = ({
                     <div className="flex-1 min-w-0 space-y-3">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-xs font-mono font-semibold text-slate-600 tabular-nums">
-                          Imagem {idx + 1} · {img.widthPx}×{img.heightPx}px
+                          Imagem {idx + 1} · {img.widthPx}×{img.heightPx}px ·{' '}
+                          {estimateCharsSizeKb(img.dataUrl.length)} KB
                         </span>
                         <div className="flex items-center gap-1">
                           <button

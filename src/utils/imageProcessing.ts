@@ -2,11 +2,16 @@ import { NormaImagemItem } from '../types/norma';
 
 export const MAX_IMAGES_PER_NORMA = 10;
 export const MAX_SINGLE_IMAGE_CHARS = 220_000;
-export const MAX_TOTAL_IMAGES_CHARS = 550_000;
+export const MAX_TOTAL_IMAGES_CHARS = 800_000;
 
 export const IMAGE_WIDTH_STEPS_MM = [
   25, 35, 45, 55, 70, 85, 100, 120, 140, 155,
 ] as const;
+
+export function estimateCharsSizeKb(chars: number): number {
+  if (!Number.isFinite(chars) || chars <= 0) return 0;
+  return Math.max(1, Math.round((chars * 0.75) / 1024));
+}
 
 export function snapLarguraMm(mm: number): number {
   const num = Number(mm);
@@ -129,6 +134,15 @@ export async function processUploadedImageFile(
     );
   }
 
+  const currentTotal = estimateTotalImagesChars(existingImages);
+  const remainingChars = MAX_TOTAL_IMAGES_CHARS - currentTotal;
+  if (remainingChars < 4_000) {
+    throw new Error(
+      `Espaço total de imagens nesta norma atingido (${estimateCharsSizeKb(currentTotal)} KB / ${estimateCharsSizeKb(MAX_TOTAL_IMAGES_CHARS)} KB usados). Remova alguma imagem existente antes de adicionar outra.`
+    );
+  }
+  const targetMaxChars = Math.min(MAX_SINGLE_IMAGE_CHARS, remainingChars);
+
   const allowedTypes = [
     'image/png',
     'image/jpeg',
@@ -157,17 +171,51 @@ export async function processUploadedImageFile(
   const naturalW = Math.max(1, img.naturalWidth || img.width || 600);
   const naturalH = Math.max(1, img.naturalHeight || img.height || 400);
 
-  const maxDims = [900, 720, 540, 400];
-  let chosenUrl = '';
-  let chosenMime: 'image/png' | 'image/jpeg' = 'image/png';
-  let outW = naturalW;
-  let outH = naturalH;
-
+  const maxDims = [900, 720, 540, 400, 320, 240];
+  const distinctDims: Array<{ w: number; h: number }> = [];
   for (const maxDim of maxDims) {
     const scale = Math.min(1, maxDim / Math.max(naturalW, naturalH));
     const w = Math.max(1, Math.round(naturalW * scale));
     const h = Math.max(1, Math.round(naturalH * scale));
+    if (!distinctDims.some((d) => d.w === w && d.h === h)) {
+      distinctDims.push({ w, h });
+    }
+  }
 
+  let chosenUrl = '';
+  let chosenMime: 'image/png' | 'image/jpeg' = 'image/png';
+  let outW = naturalW;
+  let outH = naturalH;
+  let smallestCandidateLen = Infinity;
+
+  const renderJpegCandidates = (
+    w: number,
+    h: number,
+    qualities: number[]
+  ): string | null => {
+    const jpgCanvas = document.createElement('canvas');
+    jpgCanvas.width = w;
+    jpgCanvas.height = h;
+    const jpgCtx = jpgCanvas.getContext('2d');
+    if (!jpgCtx) return null;
+    jpgCtx.fillStyle = '#ffffff';
+    jpgCtx.fillRect(0, 0, w, h);
+    jpgCtx.drawImage(img, 0, 0, w, h);
+    for (const q of qualities) {
+      const jpgUrl = jpgCanvas.toDataURL('image/jpeg', q);
+      if (jpgUrl.length < smallestCandidateLen) {
+        smallestCandidateLen = jpgUrl.length;
+      }
+      if (jpgUrl.length <= targetMaxChars) {
+        return jpgUrl;
+      }
+    }
+    return null;
+  };
+
+  let detectedAlpha: boolean | null = null;
+
+  for (const { w, h } of distinctDims) {
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
@@ -179,58 +227,70 @@ export async function processUploadedImageFile(
     ctx.clearRect(0, 0, w, h);
     ctx.drawImage(img, 0, 0, w, h);
 
-    const hasAlpha = canvasHasTransparency(ctx, w, h);
+    if (detectedAlpha === null) {
+      detectedAlpha = canvasHasTransparency(ctx, w, h);
+    }
     const pngUrl = canvas.toDataURL('image/png');
-
-    if (hasAlpha && pngUrl.length <= MAX_SINGLE_IMAGE_CHARS) {
-      chosenUrl = pngUrl;
-      chosenMime = 'image/png';
-      outW = w;
-      outH = h;
-      break;
+    if (pngUrl.length < smallestCandidateLen) {
+      smallestCandidateLen = pngUrl.length;
     }
 
-    if (!hasAlpha && pngUrl.length <= MAX_SINGLE_IMAGE_CHARS) {
-      chosenUrl = pngUrl;
-      chosenMime = 'image/png';
-      outW = w;
-      outH = h;
-      break;
-    }
-
-    // Se PNG exceder orçamento, comprimir em JPEG (com fundo branco para transparência)
-    const jpgCanvas = document.createElement('canvas');
-    jpgCanvas.width = w;
-    jpgCanvas.height = h;
-    const jpgCtx = jpgCanvas.getContext('2d');
-    if (jpgCtx) {
-      jpgCtx.fillStyle = '#ffffff';
-      jpgCtx.fillRect(0, 0, w, h);
-      jpgCtx.drawImage(img, 0, 0, w, h);
-      for (const q of [0.84, 0.72, 0.58]) {
-        const jpgUrl = jpgCanvas.toDataURL('image/jpeg', q);
-        if (jpgUrl.length <= MAX_SINGLE_IMAGE_CHARS) {
-          chosenUrl = jpgUrl;
-          chosenMime = 'image/jpeg';
-          outW = w;
-          outH = h;
-          break;
-        }
+    if (detectedAlpha) {
+      // Preserva transparência (ex.: carimbo em PNG) reduzindo dimensões antes de recorrer a JPEG
+      if (pngUrl.length <= targetMaxChars) {
+        chosenUrl = pngUrl;
+        chosenMime = 'image/png';
+        outW = w;
+        outH = h;
+        break;
       }
-      if (chosenUrl) break;
+      continue;
+    }
+
+    // Para imagens opacas: mantém PNG se for leve/compacto (desenhos/traços), ou escolhe JPEG se for menor
+    const jpgUrl = renderJpegCandidates(w, h, [0.84, 0.72]);
+    if (
+      pngUrl.length <= targetMaxChars &&
+      (pngUrl.length <= 75_000 || !jpgUrl || pngUrl.length <= jpgUrl.length)
+    ) {
+      chosenUrl = pngUrl;
+      chosenMime = 'image/png';
+      outW = w;
+      outH = h;
+      break;
+    }
+    if (jpgUrl) {
+      chosenUrl = jpgUrl;
+      chosenMime = 'image/jpeg';
+      outW = w;
+      outH = h;
+      break;
     }
   }
 
-  if (!chosenUrl || chosenUrl.length > MAX_SINGLE_IMAGE_CHARS) {
+  // Fallback adaptativo mais compacto para caber no orçamento restante da minuta
+  if (!chosenUrl) {
+    const fallbackDims = distinctDims.slice(-3);
+    for (const { w, h } of fallbackDims) {
+      const jpgUrl = renderJpegCandidates(w, h, [0.64, 0.52, 0.4, 0.32]);
+      if (jpgUrl) {
+        chosenUrl = jpgUrl;
+        chosenMime = 'image/jpeg';
+        outW = w;
+        outH = h;
+        break;
+      }
+    }
+  }
+
+  if (!chosenUrl) {
+    if (remainingChars < MAX_SINGLE_IMAGE_CHARS) {
+      throw new Error(
+        `A imagem otimizada (${estimateCharsSizeKb(smallestCandidateLen)} KB) excede o espaço restante nesta norma (${estimateCharsSizeKb(remainingChars)} KB de ${estimateCharsSizeKb(MAX_TOTAL_IMAGES_CHARS)} KB disponíveis). Remova alguma imagem existente antes de adicionar outra.`
+      );
+    }
     throw new Error(
       'A imagem continua muito pesada após a otimização para sincronização em nuvem. Tente uma imagem com menor resolução.'
-    );
-  }
-
-  const currentTotal = estimateTotalImagesChars(existingImages);
-  if (currentTotal + chosenUrl.length > MAX_TOTAL_IMAGES_CHARS) {
-    throw new Error(
-      'Espaço total de imagens nesta norma atingido. Remova alguma imagem existente antes de adicionar outra.'
     );
   }
 
