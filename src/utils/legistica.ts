@@ -4,7 +4,17 @@ import {
   AuditFinding,
   AuditSummary,
   NormaDocument,
+  NormaTipo,
 } from '../types/norma';
+import {
+  computeProgressiveStructure,
+  formatNormaEpigrafe,
+  formatPreambuloParts,
+  getNormaFormatProfile,
+  getNormaSpec,
+  getOrdemExecucaoPadrao as getOrdemExecucaoPadraoFromProfile,
+  getVigenciaPronomePrefix,
+} from './normaProfiles';
 
 export function toRoman(num: number): string {
   const map: Array<[number, string]> = [
@@ -90,39 +100,242 @@ export function formatParagrafoNumero(
 }
 
 export function getOrdemExecucaoPadrao(tipo: NormaDocument['tipo']): string {
-  switch (tipo) {
-    case 'Decreto':
-      return 'DECRETA:';
-    case 'Portaria':
-    case 'Resolução':
-      return 'RESOLVE:';
-    case 'Instrução Normativa':
-      return 'INSTRUIR e ESTABELECER:';
-    case 'Norma Interna':
-      return 'ESTABELECE:';
-    default:
-      return 'DECRETA:';
-  }
+  return getOrdemExecucaoPadraoFromProfile(tipo);
 }
 
 export function renderVigenciaClause(doc: NormaDocument): string {
+  const prefix = getVigenciaPronomePrefix(doc.tipo);
   if (doc.vigenciaTipo === 'imediata') {
-    return 'Este ato entra em vigor na data de sua publicação.';
+    return `${prefix} entra em vigor na data de sua publicação.`;
   }
   if (doc.vigenciaTipo === 'dias') {
     const dias = Math.max(1, doc.vigenciaDias || 30);
-    return `Este ato entra em vigor ${dias} (${dias === 1 ? 'um' : dias}) dias após a data de sua publicação.`;
+    return `${prefix} entra em vigor ${dias} (${dias === 1 ? 'um' : dias}) dias após a data de sua publicação.`;
   }
-  return `Este ato entra em vigor em ${doc.vigenciaData || '[informar data]'}.`;
+  return `${prefix} entra em vigor em ${doc.vigenciaData || '[informar data]'}.`;
+}
+
+function renderTecnicoOperacionalPlainText(doc: NormaDocument): string {
+  const lines: string[] = [];
+  const epigrafe = formatNormaEpigrafe(doc);
+  lines.push(epigrafe);
+  lines.push('================================================================');
+  if (doc.esfera.trim()) {
+    lines.push(`ÁREA / SETOR EMITENTE: ${doc.esfera.trim()}`);
+  }
+  if (doc.autoridade.trim()) {
+    lines.push(`RESPONSÁVEL TÉCNICO / AUTORIDADE: ${doc.autoridade.trim()}`);
+  }
+  if (doc.fundamentoLegal.trim()) {
+    lines.push(
+      `NORMAS E DOCUMENTOS DE REFERÊNCIA: ${doc.fundamentoLegal.replace(/\n+/g, '; ').trim()}`
+    );
+  }
+  if (doc.ementa.trim()) {
+    lines.push(`OBJETIVO / ESCOPO: ${doc.ementa.trim()}`);
+  }
+  lines.push('================================================================');
+  lines.push('');
+
+  const ordem = doc.ordemExecucao.trim() || getOrdemExecucaoPadrao(doc.tipo);
+  if (ordem) {
+    lines.push(ordem);
+    lines.push('');
+  }
+
+  const progressive = computeProgressiveStructure(doc.artigos);
+  let nextPrimarySec = 1;
+  let nextFlatNum = 1;
+  let hasSections = false;
+
+  doc.artigos.forEach((artigo, idx) => {
+    const layout = progressive[idx];
+    nextPrimarySec = layout.nextPrimarySectionNum;
+    nextFlatNum = layout.nextFlatItemNum;
+    hasSections = layout.hasSections;
+
+    for (const h of layout.headings) {
+      lines.push(h.formattedText);
+      lines.push('');
+    }
+
+    const hasIncisos = artigo.incisos.length > 0;
+    let caput = artigo.caput.trim();
+    if (hasIncisos && !caput.endsWith(':')) {
+      caput = `${caput.replace(/[.;]+$/, '')}:`;
+    } else if (!hasIncisos && caput && !/[.!?]$/.test(caput)) {
+      caput = `${caput}.`;
+    }
+    lines.push(`${layout.itemLabel} ${caput}`);
+
+    artigo.incisos.forEach((inc, iIdx) => {
+      const isLastInc = iIdx === artigo.incisos.length - 1;
+      const letter = toLetter(iIdx);
+      const hasAlineas = inc.alineas.length > 0;
+      let incText = inc.texto.trim();
+      if (hasAlineas) {
+        incText = `${incText.replace(/[.;:]+$/, '')}:`;
+      } else if (isLastInc) {
+        incText = `${incText.replace(/[.;:]+$/, '')}.`;
+      } else {
+        incText = `${incText.replace(/[.;:]+$/, '')};`;
+      }
+      lines.push(`   ${letter}) ${incText}`);
+
+      inc.alineas.forEach((al, alIdx) => {
+        const isLastAl = alIdx === inc.alineas.length - 1;
+        const alText = `${al.texto.trim().replace(/[.;:]+$/, '')}${isLastAl && isLastInc ? '.' : ';'}`;
+        lines.push(`      • ${alText}`);
+      });
+    });
+
+    artigo.paragrafos.forEach((par, pIdx) => {
+      const subLabel = layout.subItemLabels[pIdx];
+      const parIncisos = par.incisos || [];
+      let parText = par.texto.trim();
+      if (parIncisos.length > 0 && !parText.endsWith(':')) {
+        parText = `${parText.replace(/[.;]+$/, '')}:`;
+      } else if (parIncisos.length === 0 && parText && !/[.!?]$/.test(parText)) {
+        parText = `${parText}.`;
+      }
+      lines.push(`${subLabel} ${parText}`);
+
+      parIncisos.forEach((inc, iIdx) => {
+        const isLastInc = iIdx === parIncisos.length - 1;
+        const letter = toLetter(iIdx);
+        const hasAlineas = inc.alineas.length > 0;
+        let incText = inc.texto.trim();
+        if (hasAlineas) {
+          incText = `${incText.replace(/[.;:]+$/, '')}:`;
+        } else if (isLastInc) {
+          incText = `${incText.replace(/[.;:]+$/, '')}.`;
+        } else {
+          incText = `${incText.replace(/[.;:]+$/, '')};`;
+        }
+        lines.push(`   ${letter}) ${incText}`);
+
+        inc.alineas.forEach((al, alIdx) => {
+          const isLastAl = alIdx === inc.alineas.length - 1;
+          const alText = `${al.texto.trim().replace(/[.;:]+$/, '')}${isLastAl && isLastInc ? '.' : ';'}`;
+          lines.push(`      • ${alText}`);
+        });
+      });
+    });
+
+    lines.push('');
+
+    const postArtImgs = (doc.imagens || []).filter(
+      (img) => img.posicao === 'pos_artigo' && img.artigoId === artigo.id
+    );
+    postArtImgs.forEach((img) => {
+      if (img.titulo.trim()) {
+        lines.push(img.titulo.trim());
+      }
+      lines.push(
+        `(Ilustração técnica após item ${layout.itemLabel}: ${img.legenda.trim() || img.titulo.trim() || 'diagrama ou modelo'})`
+      );
+      lines.push('');
+    });
+  });
+
+  const revogacoesValidas = doc.revogacoes.map((r) => r.trim()).filter(Boolean);
+  if (revogacoesValidas.length > 0) {
+    const revHeader = hasSections
+      ? `${nextPrimarySec}. DISPOSIÇÕES SUBSTITUÍDAS`
+      : `${nextFlatNum}.`;
+    if (hasSections) {
+      lines.push(revHeader);
+      if (revogacoesValidas.length === 1) {
+        lines.push(
+          `${nextPrimarySec}.1 Fica substituído/revogado o documento ${revogacoesValidas[0].replace(/\.$/, '')}.`
+        );
+      } else {
+        lines.push(`${nextPrimarySec}.1 Ficam substituídos ou revogados:`);
+        revogacoesValidas.forEach((rev, rIdx) => {
+          const sep = rIdx === revogacoesValidas.length - 1 ? '.' : ';';
+          lines.push(`   ${toLetter(rIdx)}) ${rev.replace(/[.;]+$/, '')}${sep}`);
+        });
+      }
+      nextPrimarySec += 1;
+    } else {
+      if (revogacoesValidas.length === 1) {
+        lines.push(
+          `${revHeader} Fica substituído/revogado o documento ${revogacoesValidas[0].replace(/\.$/, '')}.`
+        );
+      } else {
+        lines.push(`${revHeader} Ficam substituídos ou revogados:`);
+        revogacoesValidas.forEach((rev, rIdx) => {
+          const sep = rIdx === revogacoesValidas.length - 1 ? '.' : ';';
+          lines.push(`   ${toLetter(rIdx)}) ${rev.replace(/[.;]+$/, '')}${sep}`);
+        });
+      }
+      nextFlatNum += 1;
+    }
+    lines.push('');
+  }
+
+  const vigText = renderVigenciaClause(doc);
+  if (hasSections) {
+    lines.push(`${nextPrimarySec}. VIGÊNCIA E CONTROLE DE REVISÃO`);
+    lines.push(`${nextPrimarySec}.1 ${vigText}`);
+  } else {
+    lines.push(`${nextFlatNum}. ${vigText}`);
+  }
+  lines.push('');
+
+  if (doc.localAssinatura.trim()) {
+    lines.push(doc.localAssinatura.trim());
+    lines.push('');
+  }
+  if (doc.assinante.trim()) {
+    lines.push(doc.assinante.trim());
+    if (doc.cargoAssinante.trim()) {
+      lines.push(doc.cargoAssinante.trim());
+    }
+  }
+
+  const artIds = new Set(doc.artigos.map((a) => a.id));
+  const anexoImgs = (doc.imagens || []).filter(
+    (img) =>
+      img.posicao === 'anexo' ||
+      (img.posicao === 'pos_artigo' && (!img.artigoId || !artIds.has(img.artigoId)))
+  );
+  const cabecalhoImgs = (doc.imagens || []).filter(
+    (img) => img.posicao === 'cabecalho'
+  );
+
+  if (cabecalhoImgs.length > 0) {
+    lines.push('');
+    cabecalhoImgs.forEach((img) => {
+      lines.push(
+        `(Imagem no cabeçalho: ${img.titulo.trim() || img.legenda.trim() || 'logotipo ou identificação institucional'})`
+      );
+    });
+  }
+
+  if (anexoImgs.length > 0) {
+    anexoImgs.forEach((img) => {
+      lines.push('');
+      if (img.titulo.trim()) {
+        lines.push(img.titulo.trim().toUpperCase());
+      }
+      lines.push(
+        `(Anexo gráfico: ${img.legenda.trim() || img.titulo.trim() || 'fluxograma ou registro'})`
+      );
+    });
+  }
+
+  return lines.join('\n');
 }
 
 export function renderNormaPlainText(doc: NormaDocument): string {
-  const lines: string[] = [];
-  const epigrafeTipo = doc.tipo.toUpperCase();
-  const numeroLabel = doc.numero.trim() || '___';
-  const dataLabel = doc.data.trim() || 'DE ___ DE __________ DE _____';
+  const profile = getNormaFormatProfile(doc.tipo);
+  if (profile === 'tecnico_operacional') {
+    return renderTecnicoOperacionalPlainText(doc);
+  }
 
-  lines.push(`${epigrafeTipo} Nº ${numeroLabel}, ${dataLabel.toUpperCase()}`);
+  const lines: string[] = [];
+  lines.push(formatNormaEpigrafe(doc));
   lines.push('');
 
   if (doc.ementa.trim()) {
@@ -130,35 +343,35 @@ export function renderNormaPlainText(doc: NormaDocument): string {
     lines.push('');
   }
 
-  const ordem = doc.ordemExecucao.trim() || getOrdemExecucaoPadrao(doc.tipo);
-  const fundamentoLines = doc.fundamentoLegal
-    .split(/\n+/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  if (fundamentoLines.length <= 1) {
-    const fund = fundamentoLines[0] || '';
-    const needsComma = fund && !/[,:;]$/.test(fund);
-    lines.push(
-      `${doc.autoridade.trim()}, ${fund}${needsComma ? ',' : ''} ${ordem}`
-    );
+  const pre = formatPreambuloParts(doc);
+  if (pre.ordemInlineAfterAutoridade) {
+    const joined = [pre.autoridade, pre.ordem].filter(Boolean).join(pre.separadorAutoridade);
+    if (joined) {
+      lines.push(joined);
+      lines.push('');
+    }
+  } else if (pre.linhasFundamento.length === 1) {
+    const f = pre.linhasFundamento[0];
+    const comma = pre.needsCommaBeforeOrdem ? ',' : '';
+    const autPrefix = pre.autoridade ? `${pre.autoridade}${pre.separadorAutoridade}` : '';
+    const ordemSuffix = pre.ordem ? `${comma} ${pre.ordem}` : '';
+    lines.push(`${autPrefix}${f}${ordemSuffix}`);
+    lines.push('');
   } else {
-    lines.push(`${doc.autoridade.trim()}, ${fundamentoLines[0]}`);
-    for (let i = 1; i < fundamentoLines.length - 1; i++) {
-      lines.push(fundamentoLines[i]);
+    const autPrefix = pre.autoridade ? `${pre.autoridade}${pre.separadorAutoridade}` : '';
+    lines.push(`${autPrefix}${pre.linhasFundamento[0]}`);
+    for (let i = 1; i < pre.linhasFundamento.length - 1; i++) {
+      lines.push(pre.linhasFundamento[i]);
     }
-    const lastFund = fundamentoLines[fundamentoLines.length - 1];
-    const hasOrdemInside = /(DECRETA:|RESOLVE:|ESTABELECE:|PROMULGA:)\s*$/i.test(
-      lastFund
-    );
-    if (hasOrdemInside) {
-      lines.push(lastFund);
+    const lastFund = pre.linhasFundamento[pre.linhasFundamento.length - 1];
+    if (pre.ordem) {
+      const sep = pre.needsCommaBeforeOrdem ? ',' : '';
+      lines.push(`${lastFund}${sep} ${pre.ordem}`);
     } else {
-      const sep = /[,:;]$/.test(lastFund) ? '' : ',';
-      lines.push(`${lastFund}${sep} ${ordem}`);
+      lines.push(lastFund);
     }
+    lines.push('');
   }
-  lines.push('');
 
   let lastTitulo = '';
   let lastCapitulo = '';
@@ -316,15 +529,7 @@ export function renderNormaPlainText(doc: NormaDocument): string {
   // Cláusula de vigência
   artCounter += 1;
   const vigArtLabel = formatArtigoNumero(artCounter);
-  const tipoPronome =
-    doc.tipo === 'Portaria' ||
-    doc.tipo === 'Instrução Normativa' ||
-    doc.tipo === 'Resolução' ||
-    doc.tipo === 'Norma Interna'
-      ? `Esta ${doc.tipo}`
-      : `Este ${doc.tipo}`;
-
-  let vigText = renderVigenciaClause(doc).replace(/^Este ato/, tipoPronome);
+  const vigText = renderVigenciaClause(doc);
   lines.push(`${vigArtLabel} ${vigText}`);
   lines.push('');
 
@@ -378,19 +583,34 @@ export function renderAlteracaoDecreeText(
   alteracoes: AlteracaoDispositivo[]
 ): string {
   const lines: string[] = [];
-  const tipoUpper = meta.atoAlteradorTipo.toUpperCase();
-  const num = meta.atoAlteradorNumero.trim() || '___';
-  const data = meta.atoAlteradorData.trim().toUpperCase() || 'DE ___ DE __________ DE _____';
-
-  lines.push(`${tipoUpper} Nº ${num}, ${data}`);
+  lines.push(
+    formatNormaEpigrafe({
+      tipo: meta.atoAlteradorTipo,
+      numero: meta.atoAlteradorNumero,
+      data: meta.atoAlteradorData,
+    })
+  );
   lines.push('');
   lines.push(
     `Altera ${meta.normaAlvoNome.trim()}, ${meta.normaAlvoEmentaResumo.trim().replace(/\.$/, '')}.`
   );
   lines.push('');
-  lines.push(
-    `${meta.autoridade.trim()}, ${meta.fundamentoLegal.trim()}, ${meta.ordemExecucao.trim() || 'DECRETA:'}`
-  );
+
+  const pre = formatPreambuloParts({
+    tipo: meta.atoAlteradorTipo,
+    autoridade: meta.autoridade,
+    fundamentoLegal: meta.fundamentoLegal,
+    ordemExecucao: meta.ordemExecucao,
+  });
+  if (pre.ordemInlineAfterAutoridade) {
+    lines.push([pre.autoridade, pre.ordem].filter(Boolean).join(pre.separadorAutoridade));
+  } else {
+    const f = pre.linhasFundamento.join(' ');
+    const comma = pre.needsCommaBeforeOrdem ? ',' : '';
+    const autPrefix = pre.autoridade ? `${pre.autoridade}${pre.separadorAutoridade}` : '';
+    const ordemSuffix = pre.ordem ? `${comma} ${pre.ordem}` : '';
+    lines.push(`${autPrefix}${f}${ordemSuffix}`);
+  }
   lines.push('');
 
   const alteracoesOuAcrescimos = alteracoes.filter(
@@ -449,8 +669,9 @@ export function renderAlteracaoDecreeText(
   }
 
   artCounter += 1;
+  const defaultVig = `${getVigenciaPronomePrefix(meta.atoAlteradorTipo)} entra em vigor na data de sua publicação.`;
   lines.push(
-    `${formatArtigoNumero(artCounter)} ${meta.vigenciaTexto.trim() || 'Este ato entra em vigor na data de sua publicação.'}`
+    `${formatArtigoNumero(artCounter)} ${meta.vigenciaTexto.trim() || defaultVig}`
   );
   lines.push('');
 
@@ -468,7 +689,146 @@ export function renderAlteracaoDecreeText(
   return lines.join('\n');
 }
 
-export function auditNormaText(rawText: string): AuditSummary {
+const EPIGRAFE_OPENING_REGEX =
+  /^(LEI\s+COMPLEMENTAR|LEI|PROJETO\s+DE\s+LEI|DECRETO|PORTARIA|INSTRUÇÃO\s+NORMATIVA|RESOLUÇÃO|DELIBERAÇÃO|REGIMENTO\s+INTERNO|ESTATUTO|NORMA\s+INTERNA|ORDEM\s+DE\s+SERVIÇO|INSTRUÇÃO\s+DE\s+TRABALHO|PROCEDIMENTO\s+OPERACIONAL\s+PADRÃO)\b/i;
+
+const ORDEM_EXECUCAO_REGEX =
+  /(DECRETA:|RESOLVE:|ESTABELECE:|PROMULGA:|DELIBERA:|DETERMINA:|APROVA\s+E\s+ESTABELECE:|sanciono\s+a\s+seguinte\s+Lei(?:\s+Complementar)?:|APROVAÇÃO\s+E\s+CUMPRIMENTO:|PADRONIZAÇÃO\s+E\s+EXECUÇÃO\s+OBRIGATÓRIA:)/i;
+
+function auditTecnicoOperacionalText(
+  text: string,
+  docTipo: NormaTipo
+): AuditSummary {
+  const lines = text.split('\n');
+  const words = text.split(/\s+/).filter(Boolean);
+  const findings: AuditFinding[] = [];
+  const conformes: string[] = [];
+  const spec = getNormaSpec(docTipo);
+
+  const firstNonEmpty = lines.find((l) => l.trim().length > 0) || '';
+  if (/^(INSTRUÇÃO DE TRABALHO|PROCEDIMENTO OPERACIONAL PADRÃO)/i.test(firstNonEmpty.trim())) {
+    conformes.push(`Identificação técnica (${spec.siglaCurta || docTipo}) presente na abertura.`);
+    if (/N[º°]\s*___/.test(firstNonEmpty) || /DE\s+___\s+DE/.test(firstNonEmpty)) {
+      findings.push({
+        id: 'tec-epigrafe-pendente',
+        severidade: 'alerta',
+        regra: spec.normaRegente,
+        local: 'Cabeçalho Técnico',
+        descricao: 'Código/número ou data de emissão ainda contém marcação em aberto ("___").',
+        sugestao: 'Defina o código de controle e a data de emissão antes da aprovação.',
+      });
+    }
+  } else {
+    findings.push({
+      id: 'tec-epigrafe',
+      severidade: 'erro',
+      regra: spec.normaRegente,
+      local: 'Linha 1 (Cabeçalho)',
+      descricao: 'Identificação inicial do documento técnico (IT ou POP) ausente.',
+      sugestao: 'Inicie o documento com "INSTRUÇÃO DE TRABALHO (IT) Nº ..." ou "PROCEDIMENTO OPERACIONAL PADRÃO (POP) Nº ...".',
+    });
+  }
+
+  if (/OBJETIVO\s*\/\s*ESCOPO:/i.test(text) || /^\s*1\.\s+OBJETIVO/im.test(text)) {
+    conformes.push('Objetivo / Escopo delimitado conforme ABNT NBR 6024.');
+  } else {
+    findings.push({
+      id: 'tec-objetivo',
+      severidade: 'alerta',
+      regra: 'ABNT NBR 6024 / ISO 9001',
+      local: 'Cabeçalho Técnico / Seção 1',
+      descricao: 'Objetivo ou escopo operacional não identificado claramente.',
+      sugestao: 'Preencha o campo Objetivo / Escopo indicando a finalidade e quem executa a atividade.',
+    });
+  }
+
+  if (/ÁREA\s*\/\s*SETOR\s+EMITENTE:/i.test(text) && /RESPONSÁVEL\s+TÉCNICO/i.test(text)) {
+    conformes.push('Quadro de responsabilidade técnica e área emitente preenchido.');
+  } else {
+    findings.push({
+      id: 'tec-meta',
+      severidade: 'info',
+      regra: 'ISO 9001 (Controle de Informação Documentada)',
+      local: 'Quadro de Identificação',
+      descricao: 'Recomenda-se informar explicitamente a Área/Setor Emitente e o Responsável Técnico.',
+      sugestao: 'Complete os campos de Área / Setor Emitente e Autoridade / Responsável Técnico.',
+    });
+  }
+
+  // Verificar numeração progressiva (ABNT NBR 6024)
+  const itemMatches = text.match(/^\s*\d+(?:\.\d+)*\.?\s+/gm) || [];
+  let lastPrimary = 0;
+  lines.forEach((line, idx) => {
+    const lineNum = idx + 1;
+    const secMatch = line.match(/^\s*(\d+)\.\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ]/);
+    if (secMatch) {
+      const num = parseInt(secMatch[1], 10);
+      if (lastPrimary > 0 && num > lastPrimary + 1) {
+        findings.push({
+          id: `tec-seq-${lineNum}`,
+          severidade: 'erro',
+          regra: 'ABNT NBR 6024 (Numeração Progressiva)',
+          local: `Linha ${lineNum}`,
+          descricao: `Salto na numeração primária: passou da seção ${lastPrimary} para ${num}.`,
+          sugestao: `Ajuste a numeração sequencial para "${lastPrimary + 1}.".`,
+        });
+      }
+      lastPrimary = num;
+    }
+
+    const placeholder = line.match(/\[[^\]\n]{3,50}\]/);
+    if (placeholder) {
+      findings.push({
+        id: `placeholder-${idx}`,
+        severidade: 'alerta',
+        regra: 'Revisão antes da emissão',
+        local: `Linha ${lineNum}`,
+        descricao: `Campo modelo ainda não preenchido: ${placeholder[0]}.`,
+        sugestao: 'Substitua o marcador entre colchetes pelo conteúdo operacional definitivo.',
+      });
+    }
+  });
+
+  if (itemMatches.length > 0) {
+    conformes.push(`Numeração progressiva ABNT detectada (${itemMatches.length} seções/etapas).`);
+  } else {
+    findings.push({
+      id: 'tec-sem-itens',
+      severidade: 'erro',
+      regra: 'ABNT NBR 6024',
+      local: 'Corpo Operacional',
+      descricao: 'Nenhuma seção ou etapa numerada progressivamente (1., 1.1) foi encontrada.',
+      sugestao: 'Organize o procedimento em seções e etapas numeradas (ex.: 1. Objetivo, 2. Procedimento, 2.1 Etapa inicial).',
+    });
+  }
+
+  if (/entra\s+em\s+vigor/i.test(text)) {
+    conformes.push('Cláusula de vigência e controle identificada.');
+  } else {
+    findings.push({
+      id: 'sem-vigencia',
+      severidade: 'erro',
+      regra: 'Controle Documental / Vigência',
+      local: 'Parte Final',
+      descricao: 'Cláusula de vigência não localizada no documento técnico.',
+      sugestao: 'Inclua o item final definindo a data ou condição de entrada em vigor.',
+    });
+  }
+
+  return {
+    findings,
+    totalArtigos: itemMatches.length,
+    totalPalavras: words.length,
+    erros: findings.filter((f) => f.severidade === 'erro').length,
+    alertas: findings.filter((f) => f.severidade === 'alerta').length,
+    conformes,
+  };
+}
+
+export function auditNormaText(
+  rawText: string,
+  docTipo?: NormaTipo
+): AuditSummary {
   const text = rawText.trim();
   const findings: AuditFinding[] = [];
   const conformes: string[] = [];
@@ -485,12 +845,25 @@ export function auditNormaText(rawText: string): AuditSummary {
   }
 
   const lines = text.split('\n');
+  const firstNonEmpty = lines.find((l) => l.trim().length > 0) || '';
+  const detectedTechType: NormaTipo | null =
+    docTipo && getNormaFormatProfile(docTipo) === 'tecnico_operacional'
+      ? docTipo
+      : /^INSTRUÇÃO\s+DE\s+TRABALHO\b/i.test(firstNonEmpty.trim())
+        ? 'Instrução de Trabalho'
+        : /^PROCEDIMENTO\s+OPERACIONAL\s+PADRÃO\b/i.test(firstNonEmpty.trim())
+          ? 'Procedimento Operacional Padrão'
+          : null;
+
+  if (detectedTechType) {
+    return auditTecnicoOperacionalText(text, detectedTechType);
+  }
+
   const words = text.split(/\s+/).filter(Boolean);
   const artigoMatches = text.match(/^\s*Art\.\s*\d+/gm) || [];
 
   // 1. Epígrafe e placeholders em aberto
-  const firstNonEmpty = lines.find((l) => l.trim().length > 0) || '';
-  if (/^(DECRETO|PORTARIA|INSTRUÇÃO NORMATIVA|RESOLUÇÃO|NORMA INTERNA|LEI)/i.test(firstNonEmpty.trim())) {
+  if (EPIGRAFE_OPENING_REGEX.test(firstNonEmpty.trim())) {
     conformes.push('Epígrafe presente na abertura do ato.');
     if (/N[º°]\s*___/.test(firstNonEmpty) || /DE\s+___\s+DE/.test(firstNonEmpty)) {
       findings.push({
@@ -509,13 +882,21 @@ export function auditNormaText(rawText: string): AuditSummary {
       regra: 'Art. 4º da LC nº 95/1998',
       local: 'Linha 1 (Abertura)',
       descricao: 'Epígrafe ausente ou fora do padrão oficial no início do texto.',
-      sugestao: 'Inicie o documento com a espécie normativa, número e data em caixa alta (ex.: DECRETO Nº 123, DE 17 DE NOVEMBRO DE 2026).',
+      sugestao: 'Inicie o documento com a espécie normativa, número e data em caixa alta (ex.: LEI Nº 123, DE 17 DE NOVEMBRO DE 2026 ou DECRETO Nº ...).',
     });
   }
 
   // 2. Ementa (entre epígrafe e preâmbulo/artigos)
-  const preambuloOrArtIdx = lines.findIndex((l, i) => i > 0 && (/(DECRETA:|RESOLVE:|ESTABELECE:|PROMULGA:)/.test(l) || /^\s*Art\.\s*\d+/.test(l)));
-  const ementaCandidate = lines.slice(1, preambuloOrArtIdx > 1 ? preambuloOrArtIdx : 6).find((l) => l.trim().length > 0)?.trim() || '';
+  const preambuloOrArtIdx = lines.findIndex(
+    (l, i) =>
+      i > 0 &&
+      (ORDEM_EXECUCAO_REGEX.test(l) || /^\s*Art\.\s*\d+/.test(l))
+  );
+  const ementaCandidate =
+    lines
+      .slice(1, preambuloOrArtIdx > 1 ? preambuloOrArtIdx : 6)
+      .find((l) => l.trim().length > 0)
+      ?.trim() || '';
   if (
     ementaCandidate &&
     !/^(O |A |Art\.|CAPÍTULO|TÍTULO|SEÇÃO|SUBSEÇÃO|LIVRO)/i.test(
@@ -547,7 +928,7 @@ export function auditNormaText(rawText: string): AuditSummary {
   }
 
   // 3. Ordem de execução e uso de "CONSIDERANDO" no preâmbulo
-  if (/(DECRETA:|RESOLVE:|ESTABELECE:|PROMULGA:)/.test(text)) {
+  if (ORDEM_EXECUCAO_REGEX.test(text)) {
     conformes.push('Ordem de execução formal localizada no preâmbulo.');
   } else {
     findings.push({
@@ -555,8 +936,8 @@ export function auditNormaText(rawText: string): AuditSummary {
       severidade: 'alerta',
       regra: 'Art. 6º da LC nº 95/1998',
       local: 'Preâmbulo',
-      descricao: 'Não foi identificada a fórmula de ordem de execução (ex.: DECRETA:, RESOLVE:).',
-      sugestao: 'Encerre o preâmbulo indicando a autoridade, o fundamento legal de competência e o verbo imperativo seguido de dois-pontos.',
+      descricao: 'Não foi identificada a fórmula de ordem de execução (ex.: DECRETA:, RESOLVE:, APROVA E ESTABELECE:, sanciono a seguinte Lei:).',
+      sugestao: 'Encerre o preâmbulo indicando a autoridade, o fundamento legal de competência e a ordem de execução seguida de dois-pontos.',
     });
   }
 
@@ -628,7 +1009,6 @@ export function auditNormaText(rawText: string): AuditSummary {
       });
     }
 
-    // Verifica sequência numérica de artigos principais (fora de citações entre aspas)
     const seqMatch = line.match(/^\s*Art\.\s*(\d+)º?(?!-[A-Z])/);
     if (seqMatch) {
       const currentNum = parseInt(seqMatch[1], 10);
@@ -882,7 +1262,7 @@ export function auditNormaText(rawText: string): AuditSummary {
       regra: 'Art. 8º da LC nº 95/1998',
       local: 'Parte Final',
       descricao: 'Cláusula de vigência não localizada.',
-      sugestao: 'Inclua artigo final definindo quando a norma começa a produzir efeitos (ex.: "Este Decreto entra em vigor na data de sua publicação.").',
+      sugestao: 'Inclua artigo final definindo quando a norma começa a produzir efeitos (ex.: "Esta Lei entra em vigor na data de sua publicação.").',
     });
   }
 

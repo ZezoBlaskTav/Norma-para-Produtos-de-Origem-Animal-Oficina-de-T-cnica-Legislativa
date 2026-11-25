@@ -21,6 +21,7 @@ import {
   getOrdemExecucaoPadrao,
   renderAlteracaoDecreeText,
 } from '../utils/legistica';
+import { getVigenciaPronomePrefix } from '../utils/normaProfiles';
 import {
   analyzeAlteracaoLinguistics,
   applyAllAutoFixesToAlteracao,
@@ -28,6 +29,7 @@ import {
   isPortugueseErrorFinding,
 } from '../utils/revisorLinguistico';
 import { useSpellcheck } from '../hooks/useSpellcheck';
+import { NormaTipoSelect } from './NormaTipoSelect';
 import { ReviewedInput, ReviewedTextarea } from './ReviewedTextFields';
 import {
   FieldReviewHints,
@@ -325,24 +327,26 @@ export const AjusteNormaView: React.FC<AjusteNormaViewProps> = ({
                 <label className="block text-xs font-medium text-slate-700 mb-1">
                   Espécie do Ato Alterador
                 </label>
-                <select
+                <NormaTipoSelect
                   value={meta.atoAlteradorTipo}
-                  onChange={(e) => {
-                    const t = e.target.value as NormaTipo;
+                  onChange={(t: NormaTipo) => {
+                    const prevDefaultVig = `${getVigenciaPronomePrefix(meta.atoAlteradorTipo)} entra em vigor na data de sua publicação.`;
+                    const isDefaultVig =
+                      !meta.vigenciaTexto.trim() ||
+                      meta.vigenciaTexto.trim() === prevDefaultVig ||
+                      /^(Este|Esta)\s+.+\s+entra em vigor na data de sua publicação\.$/i.test(
+                        meta.vigenciaTexto.trim()
+                      );
                     onChangeMeta({
                       ...meta,
                       atoAlteradorTipo: t,
                       ordemExecucao: getOrdemExecucaoPadrao(t),
+                      vigenciaTexto: isDefaultVig
+                        ? `${getVigenciaPronomePrefix(t)} entra em vigor na data de sua publicação.`
+                        : meta.vigenciaTexto,
                     });
                   }}
-                  className="w-full text-sm bg-white border border-slate-300 rounded-md px-3 py-2 text-slate-900"
-                >
-                  <option value="Decreto">Decreto</option>
-                  <option value="Instrução Normativa">Instrução Normativa</option>
-                  <option value="Portaria">Portaria</option>
-                  <option value="Resolução">Resolução</option>
-                  <option value="Norma Interna">Norma Interna</option>
-                </select>
+                />
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">

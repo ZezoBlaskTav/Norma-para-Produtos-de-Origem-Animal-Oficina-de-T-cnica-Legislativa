@@ -7,7 +7,9 @@ import {
   Wand2,
   XCircle,
 } from 'lucide-react';
+import { NormaTipo } from '../types/norma';
 import { auditNormaText } from '../utils/legistica';
+import { isTechnicalOperationalProfile } from '../utils/normaProfiles';
 
 export type AuditSourceMode = 'editor' | 'ajuste' | 'avulso';
 
@@ -18,6 +20,7 @@ interface AuditorNormaViewProps {
   onChangeCustomText: (next: string) => void;
   editorDocTitle: string;
   ajusteDocTitle: string;
+  activeDocTipo?: NormaTipo;
 }
 
 const EXEMPLO_COM_ERROS = `Regulamento de Uso de Espaços Públicos
@@ -38,8 +41,16 @@ export const AuditorNormaView: React.FC<AuditorNormaViewProps> = ({
   onChangeCustomText,
   editorDocTitle,
   ajusteDocTitle,
+  activeDocTipo,
 }) => {
-  const summary = useMemo(() => auditNormaText(text), [text]);
+  const effectiveTipo = source === 'avulso' ? undefined : activeDocTipo;
+  const summary = useMemo(
+    () => auditNormaText(text, effectiveTipo),
+    [text, effectiveTipo]
+  );
+  const isTechMode = Boolean(
+    effectiveTipo && isTechnicalOperationalProfile(effectiveTipo)
+  );
 
   const applyAutomaticFixes = () => {
     let fixed = text;
@@ -64,11 +75,11 @@ export const AuditorNormaView: React.FC<AuditorNormaViewProps> = ({
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-200 pb-4">
           <div>
             <h2 className="text-base font-semibold text-slate-900">
-              Auditor de Conformidade Formal (LC nº 95/1998 e Decreto nº 12.002/2024)
+              Auditor de Conformidade Formal (LC nº 95/1998, Decreto nº 12.002/2024 e ABNT NBR 6024)
             </h2>
             <p className="text-sm text-slate-600 mt-0.5">
-              Analisa automaticamente a minuta atual do Editor, o Ato Alterador (NR) ou
-              qualquer texto colado manualmente.
+              Analisa automaticamente leis, decretos, regimentos internos, instruções
+              de trabalho (IT/POP) ou qualquer texto colado manualmente.
             </p>
           </div>
 
@@ -135,7 +146,9 @@ export const AuditorNormaView: React.FC<AuditorNormaViewProps> = ({
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-2 border-t border-slate-100">
           <div>
-            <div className="text-xs text-slate-500">Artigos detectados</div>
+            <div className="text-xs text-slate-500">
+              {isTechMode ? 'Itens / etapas detectados' : 'Artigos detectados'}
+            </div>
             <div className="text-xl font-semibold font-mono tabular-nums text-slate-900 mt-0.5">
               {summary.totalArtigos}
             </div>
@@ -195,7 +208,7 @@ export const AuditorNormaView: React.FC<AuditorNormaViewProps> = ({
             rows={22}
             value={text}
             onChange={(e) => onChangeCustomText(e.target.value)}
-            placeholder="Cole aqui o texto integral do decreto, portaria ou norma para análise automática..."
+            placeholder="Cole aqui o texto integral da lei, decreto, regimento interno, instrução de trabalho ou norma para análise automática..."
             className="w-full font-serif text-sm bg-slate-50 border border-slate-300 rounded-md p-4 text-slate-900 leading-relaxed focus:outline-none focus:ring-2 focus:ring-slate-900"
           />
           {source !== 'avulso' && (

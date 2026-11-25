@@ -167,7 +167,7 @@ const TAB_INFO: Record<
   },
   editor: {
     label: 'Editor Estruturado',
-    breadcrumb: 'Criação de Decreto ou Norma',
+    breadcrumb: 'Criação de Lei, Decreto, Regimento ou Norma',
     icon: FilePlus2,
   },
   ajuste: {
@@ -1841,15 +1841,15 @@ export function App() {
                 {cloudSyncStatus === 'saving'
                   ? 'Salvando...'
                   : sidebarSavedFeedback
-                    ? 'Decreto salvo'
-                    : 'Salvar decreto atual'}
+                    ? 'Minuta salva'
+                    : 'Salvar minuta atual'}
               </span>
             </button>
 
             <div className="pt-2 space-y-1.5">
               <div className="flex items-center justify-between text-xs">
                 <span className="font-semibold text-slate-600 tabular-nums">
-                  Decretos salvos ({cloudNormas.length})
+                  Minutas salvas ({cloudNormas.length})
                 </span>
                 <button
                   type="button"
@@ -1861,7 +1861,7 @@ export function App() {
               </div>
               {cloudNormas.length === 0 ? (
                 <p className="text-[11px] text-slate-500 leading-relaxed">
-                  Clique em “Salvar decreto atual” para listar suas minutas aqui.
+                  Clique em “Salvar minuta atual” para listar seus documentos aqui.
                 </p>
               ) : (
                 <div className="space-y-1 max-h-40 overflow-y-auto pr-0.5">
@@ -1883,7 +1883,7 @@ export function App() {
                           <div className="truncate">{item.titulo}</div>
                           <div className="text-[11px] text-slate-500 tabular-nums">
                             {item.doc.artigos.length}{' '}
-                            {item.doc.artigos.length === 1 ? 'artigo' : 'artigos'}
+                            {item.doc.artigos.length === 1 ? 'dispositivo' : 'dispositivos'}
                             {isCurrent ? ' · Em edição' : ''}
                           </div>
                         </div>
@@ -1901,7 +1901,7 @@ export function App() {
               Exportar norma atual
             </div>
             <p className="text-xs text-slate-500 leading-relaxed">
-              Padrão A4 · Times 12pt · recuos oficiais LC nº 95/98.
+              Padrão A4 adaptado à espécie (LC nº 95/98, Regimento ou ABNT NBR 6024).
             </p>
             <div className="space-y-2 pt-0.5">
               <button
@@ -2040,14 +2040,14 @@ export function App() {
                     {cloudSyncStatus === 'saving'
                       ? 'Salvando...'
                       : sidebarSavedFeedback
-                        ? 'Decreto salvo'
-                        : 'Salvar decreto atual'}
+                        ? 'Minuta salva'
+                        : 'Salvar minuta atual'}
                   </span>
                 </button>
 
                 <div className="space-y-1.5">
                   <div className="text-xs font-semibold text-slate-600 tabular-nums">
-                    Decretos salvos ({cloudNormas.length})
+                    Minutas salvas ({cloudNormas.length})
                   </div>
                   {cloudNormas.length === 0 ? (
                     <p className="text-[11px] text-slate-500">
@@ -2280,6 +2280,13 @@ export function App() {
               onChangeSource={setAuditSourceMode}
               editorDocTitle={`${doc.tipo} nº ${doc.numero || '___'}`}
               ajusteDocTitle={`${altMeta.atoAlteradorTipo} nº ${altMeta.atoAlteradorNumero || '___'}`}
+              activeDocTipo={
+                auditSourceMode === 'editor'
+                  ? doc.tipo
+                  : auditSourceMode === 'ajuste'
+                    ? altMeta.atoAlteradorTipo
+                    : undefined
+              }
               text={activeAuditText}
               onChangeCustomText={handleChangeAvulsoText}
             />

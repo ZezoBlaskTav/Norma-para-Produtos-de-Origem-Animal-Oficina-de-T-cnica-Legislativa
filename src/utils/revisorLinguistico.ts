@@ -13,6 +13,10 @@ import {
   toLetter,
   toRoman,
 } from './legistica';
+import {
+  computeProgressiveStructure,
+  isTechnicalOperationalProfile,
+} from './normaProfiles';
 
 export interface PortugueseSpellChecker {
   hasWord: (word: string) => boolean;
@@ -860,11 +864,13 @@ const PATTERN_RULES: PatternRule[] = [
 
 function buildFieldContexts(doc: NormaDocument): TextFieldContext[] {
   const fields: TextFieldContext[] = [];
+  const isTech = isTechnicalOperationalProfile(doc.tipo);
+  const progressive = isTech ? computeProgressiveStructure(doc.artigos) : null;
 
   fields.push({
     fieldKey: 'ementa',
     fieldRef: { kind: 'ementa' },
-    fieldLabel: 'Ementa',
+    fieldLabel: isTech ? 'Objetivo / Escopo' : 'Ementa',
     text: doc.ementa,
     isNormativeDevice: false,
   });
@@ -873,7 +879,7 @@ function buildFieldContexts(doc: NormaDocument): TextFieldContext[] {
     fields.push({
       fieldKey: 'autoridade',
       fieldRef: { kind: 'autoridade' },
-      fieldLabel: 'Autoridade Signatária',
+      fieldLabel: isTech ? 'Responsável Técnico' : 'Autoridade Signatária',
       text: doc.autoridade,
       isNormativeDevice: false,
       skipProperNounCaps: true,
@@ -883,19 +889,24 @@ function buildFieldContexts(doc: NormaDocument): TextFieldContext[] {
   fields.push({
     fieldKey: 'fundamentoLegal',
     fieldRef: { kind: 'fundamentoLegal' },
-    fieldLabel: 'Preâmbulo / Fundamento Legal',
+    fieldLabel: isTech
+      ? 'Normas e Documentos de Referência'
+      : 'Preâmbulo / Fundamento Legal',
     text: doc.fundamentoLegal,
     isNormativeDevice: false,
   });
 
   doc.artigos.forEach((art, aIdx) => {
-    const artLabel = formatArtigoNumero(aIdx + 1, art.sufixo);
+    const prog = progressive ? progressive[aIdx] : null;
+    const artLabel = isTech && prog
+      ? `Item ${prog.itemLabel.replace(/\.$/, '')}`
+      : formatArtigoNumero(aIdx + 1, art.sufixo);
 
     if (art.titulo) {
       fields.push({
         fieldKey: `titulo:${art.id}`,
         fieldRef: { kind: 'titulo', artigoId: art.id },
-        fieldLabel: `Título (${artLabel})`,
+        fieldLabel: `${isTech ? 'Seção Principal' : 'Título'} (${artLabel})`,
         text: art.titulo,
         isNormativeDevice: false,
         isUpperHeading: true,
@@ -906,7 +917,7 @@ function buildFieldContexts(doc: NormaDocument): TextFieldContext[] {
       fields.push({
         fieldKey: `capitulo:${art.id}`,
         fieldRef: { kind: 'capitulo', artigoId: art.id },
-        fieldLabel: `Capítulo (${artLabel})`,
+        fieldLabel: `${isTech ? 'Seção' : 'Capítulo'} (${artLabel})`,
         text: art.capitulo,
         isNormativeDevice: false,
         isUpperHeading: true,
@@ -917,7 +928,7 @@ function buildFieldContexts(doc: NormaDocument): TextFieldContext[] {
       fields.push({
         fieldKey: `secao:${art.id}`,
         fieldRef: { kind: 'secao', artigoId: art.id },
-        fieldLabel: `Seção (${artLabel})`,
+        fieldLabel: `${isTech ? 'Subseção' : 'Seção'} (${artLabel})`,
         text: art.secao,
         isNormativeDevice: false,
         isUpperHeading: true,
@@ -928,7 +939,7 @@ function buildFieldContexts(doc: NormaDocument): TextFieldContext[] {
       fields.push({
         fieldKey: `subsecao:${art.id}`,
         fieldRef: { kind: 'subsecao', artigoId: art.id },
-        fieldLabel: `Subseção (${artLabel})`,
+        fieldLabel: `${isTech ? 'Tópico' : 'Subseção'} (${artLabel})`,
         text: art.subsecao,
         isNormativeDevice: false,
         isUpperHeading: true,
@@ -938,20 +949,22 @@ function buildFieldContexts(doc: NormaDocument): TextFieldContext[] {
     fields.push({
       fieldKey: `caput:${art.id}`,
       fieldRef: { kind: 'caput', artigoId: art.id },
-      fieldLabel: `${artLabel} (caput)`,
+      fieldLabel: isTech ? artLabel : `${artLabel} (caput)`,
       text: art.caput,
       isNormativeDevice: true,
     });
 
     art.incisos.forEach((inc, iIdx) => {
-      const roman = toRoman(iIdx + 1);
+      const roman = isTech ? toLetter(iIdx) : toRoman(iIdx + 1);
       fields.push({
         fieldKey: `inciso:${art.id}:${inc.id}`,
         fieldRef: { kind: 'inciso', artigoId: art.id, incisoId: inc.id },
-        fieldLabel: `${artLabel}, inciso ${roman}`,
+        fieldLabel: isTech
+          ? `${artLabel}, alínea "${roman}"`
+          : `${artLabel}, inciso ${roman}`,
         text: inc.texto,
         isNormativeDevice: true,
-        isSubItemLowercaseStart: true,
+        isSubItemLowercaseStart: !isTech,
       });
 
       inc.alineas.forEach((al, alIdx) => {
@@ -964,31 +977,35 @@ function buildFieldContexts(doc: NormaDocument): TextFieldContext[] {
             incisoId: inc.id,
             alineaId: al.id,
           },
-          fieldLabel: `${artLabel}, inciso ${roman}, alínea "${letter}"`,
+          fieldLabel: isTech
+            ? `${artLabel}, alínea "${roman}", subitem ${alIdx + 1}`
+            : `${artLabel}, inciso ${roman}, alínea "${letter}"`,
           text: al.texto,
           isNormativeDevice: true,
-          isSubItemLowercaseStart: true,
+          isSubItemLowercaseStart: !isTech,
         });
       });
     });
 
     art.paragrafos.forEach((par, pIdx) => {
-      const parLabel = formatParagrafoNumero(
-        pIdx,
-        art.paragrafos.length,
-        par.sufixo
-      );
+      const parLabel = isTech && prog
+        ? `Subitem ${prog.subItemLabels[pIdx]}`
+        : formatParagrafoNumero(
+            pIdx,
+            art.paragrafos.length,
+            par.sufixo
+          );
       const parLabelClean = parLabel.replace(/\.$/, '');
       fields.push({
         fieldKey: `paragrafo:${art.id}:${par.id}`,
         fieldRef: { kind: 'paragrafo', artigoId: art.id, paragrafoId: par.id },
-        fieldLabel: `${artLabel}, ${parLabelClean}`,
+        fieldLabel: isTech ? parLabelClean : `${artLabel}, ${parLabelClean}`,
         text: par.texto,
         isNormativeDevice: true,
       });
 
       (par.incisos || []).forEach((inc, iIdx) => {
-        const roman = toRoman(iIdx + 1);
+        const roman = isTech ? toLetter(iIdx) : toRoman(iIdx + 1);
         fields.push({
           fieldKey: `par_inciso:${art.id}:${par.id}:${inc.id}`,
           fieldRef: {
@@ -997,10 +1014,12 @@ function buildFieldContexts(doc: NormaDocument): TextFieldContext[] {
             paragrafoId: par.id,
             incisoId: inc.id,
           },
-          fieldLabel: `${artLabel}, ${parLabelClean}, inciso ${roman}`,
+          fieldLabel: isTech
+            ? `${parLabelClean}, alínea "${roman}"`
+            : `${artLabel}, ${parLabelClean}, inciso ${roman}`,
           text: inc.texto,
           isNormativeDevice: true,
-          isSubItemLowercaseStart: true,
+          isSubItemLowercaseStart: !isTech,
         });
 
         inc.alineas.forEach((al, alIdx) => {
@@ -1014,10 +1033,12 @@ function buildFieldContexts(doc: NormaDocument): TextFieldContext[] {
               incisoId: inc.id,
               alineaId: al.id,
             },
-            fieldLabel: `${artLabel}, ${parLabelClean}, inciso ${roman}, alínea "${letter}"`,
+            fieldLabel: isTech
+              ? `${parLabelClean}, alínea "${roman}", subitem ${alIdx + 1}`
+              : `${artLabel}, ${parLabelClean}, inciso ${roman}, alínea "${letter}"`,
             text: al.texto,
             isNormativeDevice: true,
-            isSubItemLowercaseStart: true,
+            isSubItemLowercaseStart: !isTech,
           });
         });
       });
@@ -1108,6 +1129,17 @@ const LEGAL_ALLOWLIST = new Set([
   'interoperáveis',
   'desburocratização',
   'camaquã',
+  'abnt',
+  'nbr',
+  'iso',
+  'pop',
+  'pops',
+  'epi',
+  'epis',
+  'checklist',
+  'rastreabilidade',
+  'higienização',
+  'sanitização',
 ]);
 
 const ENCLITIC_PRONOUNS = new Set([

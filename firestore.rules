@@ -144,7 +144,22 @@ service cloud.firestore {
         && data.titulo.size() >= 1
         && data.titulo.size() <= 180
         && data.tipo is string
-        && data.tipo in ['Decreto', 'Portaria', 'Instrução Normativa', 'Resolução', 'Norma Interna']
+        && data.tipo in [
+          'Lei',
+          'Lei Complementar',
+          'Projeto de Lei',
+          'Decreto',
+          'Resolução',
+          'Instrução Normativa',
+          'Portaria',
+          'Deliberação',
+          'Regimento Interno',
+          'Estatuto',
+          'Norma Interna',
+          'Ordem de Serviço',
+          'Instrução de Trabalho',
+          'Procedimento Operacional Padrão'
+        ]
         && data.numero is string && data.numero.size() <= 40
         && data.data is string && data.data.size() <= 80
         && data.esfera is string && data.esfera.size() <= 80

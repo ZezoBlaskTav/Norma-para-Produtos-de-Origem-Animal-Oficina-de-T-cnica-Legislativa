@@ -218,11 +218,20 @@ function toIsoFromTimestamp(val: unknown): string {
 }
 
 const VALID_NORM_TYPES: NormaTipo[] = [
+  'Lei',
+  'Lei Complementar',
+  'Projeto de Lei',
   'Decreto',
-  'Portaria',
-  'Instrução Normativa',
   'Resolução',
+  'Instrução Normativa',
+  'Portaria',
+  'Deliberação',
+  'Regimento Interno',
+  'Estatuto',
   'Norma Interna',
+  'Ordem de Serviço',
+  'Instrução de Trabalho',
+  'Procedimento Operacional Padrão',
 ];
 
 const VALID_VIGENCIA: VigenciaTipo[] = ['imediata', 'dias', 'data_certa'];

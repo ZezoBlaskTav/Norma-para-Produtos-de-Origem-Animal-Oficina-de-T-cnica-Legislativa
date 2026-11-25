@@ -1,9 +1,18 @@
 export type NormaTipo =
+  | 'Lei'
+  | 'Lei Complementar'
+  | 'Projeto de Lei'
   | 'Decreto'
-  | 'Portaria'
-  | 'Instrução Normativa'
   | 'Resolução'
-  | 'Norma Interna';
+  | 'Instrução Normativa'
+  | 'Portaria'
+  | 'Deliberação'
+  | 'Regimento Interno'
+  | 'Estatuto'
+  | 'Norma Interna'
+  | 'Ordem de Serviço'
+  | 'Instrução de Trabalho'
+  | 'Procedimento Operacional Padrão';
 
 export type VigenciaTipo = 'imediata' | 'dias' | 'data_certa';
 

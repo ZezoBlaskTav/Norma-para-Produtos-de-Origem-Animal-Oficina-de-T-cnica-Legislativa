@@ -7,6 +7,7 @@ import {
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
+  ClipboardCheck,
   Cloud,
   Columns2,
   Copy,
@@ -53,17 +54,33 @@ import {
   auditNormaText,
   formatArtigoNumero,
   formatParagrafoNumero,
-  getOrdemExecucaoPadrao,
   renderNormaPlainText,
+  renderVigenciaClause,
   toLetter,
   toRoman,
 } from '../utils/legistica';
+import {
+  ALL_NORMA_TIPOS,
+  computeProgressiveStructure,
+  formatNormaEpigrafe,
+  formatPreambuloParts,
+  getNormaSpec,
+  isRegimentalWideEmenta,
+  isTechnicalOperationalProfile,
+} from '../utils/normaProfiles';
 import {
   analyzeNormaLinguistics,
   applyAllAutoFixesToDoc,
   applyLinguisticFixToDoc,
   isPortugueseErrorFinding,
 } from '../utils/revisorLinguistico';
+import {
+  FieldRequirementLevel,
+  ValidatableDocFieldKey,
+  validateNormaDocument,
+} from '../utils/normaValidation';
+import { buildComplianceChecklist } from '../utils/normaChecklist';
+import { ChecklistConformidadePanel } from './ChecklistConformidadePanel';
 import { ArtigoDiffItem, FieldDiffItem } from '../utils/normaDiff';
 import { NORMA_TEMPLATES } from '../data/templates';
 import { useSpellcheck } from '../hooks/useSpellcheck';
@@ -75,6 +92,7 @@ import {
   NormaImagemPreviewBlock,
   NormaImagensSection,
 } from './NormaImagensSection';
+import { NormaTipoSelect } from './NormaTipoSelect';
 import {
   ReviewedInput,
   ReviewedTextarea,
@@ -299,7 +317,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
   const [copied, setCopied] = useState(false);
   const [layoutMode, setLayoutMode] = useState<EditorLayoutMode>('dividido');
   const [rightPaneMode, setRightPaneMode] = useState<
-    'previa' | 'revisor' | 'historico'
+    'previa' | 'checklist' | 'revisor' | 'historico'
   >('previa');
   const [highlightReview, setHighlightReview] = useState(true);
   const [showInlineHints, setShowInlineHints] = useState(true);
@@ -338,6 +356,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
   const [saveFeedback, setSaveFeedback] = useState<'idle' | 'saved' | 'cloned'>('idle');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [validationPanelOpen, setValidationPanelOpen] = useState(false);
 
   const [driveCopyModalOpen, setDriveCopyModalOpen] = useState(false);
   const [driveHasSessionToken, setDriveHasSessionToken] = useState(false);
@@ -379,8 +398,28 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
 
   const { spellChecker, addToDictionary, nativeFieldProps } = useSpellcheck();
 
+  const activeSpec = useMemo(() => getNormaSpec(doc.tipo), [doc.tipo]);
+  const isTech = isTechnicalOperationalProfile(doc.tipo);
+  const isWideEmenta = isRegimentalWideEmenta(doc.tipo);
+  const progressiveLayout = useMemo(
+    () => (isTech ? computeProgressiveStructure(doc.artigos) : null),
+    [isTech, doc.artigos]
+  );
+  const matchingTemplate = useMemo(
+    () => NORMA_TEMPLATES.find((t) => t.tipo === doc.tipo) || null,
+    [doc.tipo]
+  );
+
   const plainText = useMemo(() => renderNormaPlainText(doc), [doc]);
-  const audit = useMemo(() => auditNormaText(plainText), [plainText]);
+  const audit = useMemo(
+    () => auditNormaText(plainText, doc.tipo),
+    [plainText, doc.tipo]
+  );
+  const fieldValidation = useMemo(() => validateNormaDocument(doc), [doc]);
+  const complianceChecklist = useMemo(
+    () => buildComplianceChecklist(doc, fieldValidation, audit),
+    [doc, fieldValidation, audit]
+  );
   const review = useMemo(
     () => analyzeNormaLinguistics(doc, ignoredSignatures, spellChecker),
     [doc, ignoredSignatures, spellChecker]
@@ -619,10 +658,35 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
   };
 
   const handleTipoChange = (tipo: NormaTipo) => {
+    const nextSpec = getNormaSpec(tipo);
+    const allSpecs = ALL_NORMA_TIPOS.map((t) => getNormaSpec(t));
+    const isDefaultAutoridade =
+      !doc.autoridade.trim() ||
+      allSpecs.some((s) => s.defaultAutoridade === doc.autoridade.trim());
+    const isDefaultFundamento =
+      !doc.fundamentoLegal.trim() ||
+      allSpecs.some(
+        (s) => s.defaultFundamentoLegal === doc.fundamentoLegal.trim()
+      );
+    const isDefaultEsfera =
+      !doc.esfera.trim() ||
+      doc.esfera.trim() === 'Administração Pública' ||
+      doc.esfera.trim() === 'Executivo Municipal / Órgão Central';
+
     onChange({
       ...doc,
       tipo,
-      ordemExecucao: getOrdemExecucaoPadrao(tipo),
+      ordemExecucao: nextSpec.defaultOrdemExecucao,
+      autoridade: isDefaultAutoridade
+        ? nextSpec.defaultAutoridade
+        : doc.autoridade,
+      fundamentoLegal: isDefaultFundamento
+        ? nextSpec.defaultFundamentoLegal
+        : doc.fundamentoLegal,
+      esfera:
+        nextSpec.profile === 'tecnico_operacional' && isDefaultEsfera
+          ? 'Setor / Unidade Técnica Emitente'
+          : doc.esfera,
       updatedAt: new Date().toISOString(),
     });
   };
@@ -631,6 +695,9 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
     kind: 'titulo' | 'capitulo' | 'secao' | 'subsecao',
     upToIndex: number
   ): string => {
+    if (isTech) {
+      return '';
+    }
     const lastIdx = Math.min(upToIndex, doc.artigos.length - 1);
     let scopeStart = 0;
 
@@ -688,7 +755,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
     const prefix = getNextDivisionPrefix(kind, artIndex);
     const patch: Partial<ArtigoItem> = { [kind]: prefix };
 
-    if (kind === 'titulo') {
+    if (!isTech && kind === 'titulo') {
       const targetArt = doc.artigos.find((a) => a.id === artId);
       const priorHasCapitulos = doc.artigos
         .slice(0, artIndex)
@@ -752,9 +819,8 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
 
   const addArtigoComTitulo = () => {
     const prefix = getNextDivisionPrefix('titulo', doc.artigos.length);
-    const hasCapitulosNaNorma = doc.artigos.some(
-      (a) => a.capitulo !== undefined
-    );
+    const hasCapitulosNaNorma =
+      !isTech && doc.artigos.some((a) => a.capitulo !== undefined);
     const novoId = uid('art');
     const novo: ArtigoItem = {
       id: novoId,
@@ -1244,22 +1310,35 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
     setCollapsedTitulos({});
     setCollapsedSections({});
     setSelectedFindingId(null);
+    const spec = getNormaSpec(doc.tipo);
+    const blankIsTech = spec.profile === 'tecnico_operacional';
     onChange({
       id: uid('doc'),
-      tipo: 'Decreto',
-      numero: '___',
-      data: 'DE 17 DE NOVEMBRO DE 2026',
-      esfera: 'Administração Pública',
-      autoridade: 'O PREFEITO MUNICIPAL',
-      fundamentoLegal: 'no uso das atribuições que lhe confere a lei',
-      ementa: 'Dispõe sobre [objeto principal da norma].',
-      ordemExecucao: 'DECRETA:',
+      tipo: doc.tipo,
+      numero: blankIsTech
+        ? `${spec.siglaCurta || 'DOC'}-001/2026`
+        : '___',
+      data: blankIsTech
+        ? 'REVISÃO 00 — NOVEMBRO/2026'
+        : 'DE 17 DE NOVEMBRO DE 2026',
+      esfera: blankIsTech
+        ? 'Setor / Unidade Técnica Emitente'
+        : 'Administração Pública',
+      autoridade: spec.defaultAutoridade,
+      fundamentoLegal: spec.defaultFundamentoLegal,
+      ementa: blankIsTech
+        ? 'Padronizar e orientar a execução segura de [processo ou atividade] no âmbito de [setor].'
+        : 'Dispõe sobre [objeto principal da norma].',
+      ordemExecucao: spec.defaultOrdemExecucao,
       artigos: [
         {
           id: uid('art'),
-          capitulo: 'CAPÍTULO I - DAS DISPOSIÇÕES GERAIS',
-          caput:
-            'Este ato estabelece normas sobre [objeto] no âmbito de [órgão ou abrangência].',
+          ...(blankIsTech
+            ? { titulo: 'OBJETIVO E CAMPO DE APLICAÇÃO' }
+            : { capitulo: 'CAPÍTULO I - DAS DISPOSIÇÕES GERAIS' }),
+          caput: blankIsTech
+            ? 'Este procedimento aplica-se a [setor, equipe ou etapa operacional] e estabelece os requisitos mínimos de execução.'
+            : `${spec.vigenciaPronomePrefix} estabelece normas sobre [objeto] no âmbito de [órgão ou abrangência].`,
           incisos: [],
           paragrafos: [],
         },
@@ -1268,9 +1347,9 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
       vigenciaDias: 30,
       vigenciaData: '',
       revogacoes: [],
-      localAssinatura: 'Palácio Municipal, em 17 de novembro de 2026.',
-      assinante: '[NOME DA AUTORIDADE]',
-      cargoAssinante: 'Prefeito Municipal',
+      localAssinatura: 'Local, em 17 de novembro de 2026.',
+      assinante: '[NOME DO RESPONSÁVEL / AUTORIDADE]',
+      cargoAssinante: blankIsTech ? 'Responsável Técnico' : 'Autoridade Competente',
       updatedAt: new Date().toISOString(),
     });
   };
@@ -1411,15 +1490,22 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
     }
 
     if (
+      fieldKey === 'numero' ||
+      fieldKey === 'data' ||
+      fieldKey === 'esfera' ||
       fieldKey === 'ementa' ||
       fieldKey === 'fundamentoLegal' ||
-      fieldKey === 'autoridade'
+      fieldKey === 'autoridade' ||
+      fieldKey === 'ordemExecucao'
     ) {
       setCollapsedSections((prev) => ({ ...prev, preliminar: false }));
     } else if (
       fieldKey.startsWith('revogacao:') ||
+      fieldKey === 'vigencia' ||
       fieldKey === 'vigenciaData' ||
-      fieldKey === 'localAssinatura'
+      fieldKey === 'localAssinatura' ||
+      fieldKey === 'assinante' ||
+      fieldKey === 'cargoAssinante'
     ) {
       setCollapsedSections((prev) => ({ ...prev, final: false }));
     } else {
@@ -1446,9 +1532,10 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
         );
         if (container) {
           container.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          const input = container.querySelector('textarea, input') as
+          const input = container.querySelector('textarea, input, select') as
             | HTMLTextAreaElement
             | HTMLInputElement
+            | HTMLSelectElement
             | null;
           if (input) {
             input.focus();
@@ -1456,6 +1543,13 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
         }
       });
     });
+  };
+
+  const handleOpenChecklist = () => {
+    if (layoutMode === 'editor') {
+      setLayoutMode('dividido');
+    }
+    setRightPaneMode('checklist');
   };
 
   const handleOpenRevisor = () => {
@@ -1643,6 +1737,56 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
     }
   };
 
+  const renderRequirementTag = (field: ValidatableDocFieldKey) => {
+    const req: FieldRequirementLevel = fieldValidation.rules[field].requirement;
+    if (req === 'obrigatorio') {
+      return (
+        <span className="ml-1.5 text-[11px] font-medium text-slate-600">
+          · Obrigatório
+        </span>
+      );
+    }
+    if (req === 'recomendado') {
+      return (
+        <span className="ml-1.5 text-[11px] font-normal text-slate-500">
+          · Recomendado
+        </span>
+      );
+    }
+    return (
+      <span className="ml-1.5 text-[11px] font-medium text-emerald-700">
+        · Opcional em {doc.tipo}
+      </span>
+    );
+  };
+
+  const renderFieldValidationAlerts = (field: ValidatableDocFieldKey) => {
+    const fieldIssues = (fieldValidation.issuesByField[field] || []).filter(
+      (i) => i.severidade === 'erro' || i.severidade === 'alerta'
+    );
+    if (fieldIssues.length === 0) return null;
+    return (
+      <div className="space-y-1 mt-1">
+        {fieldIssues.map((issue) => (
+          <div
+            key={issue.id}
+            className={`px-2.5 py-1.5 rounded border text-[11px] leading-snug flex items-start gap-1.5 ${
+              issue.severidade === 'erro'
+                ? 'bg-red-50 border-red-200 text-red-900'
+                : 'bg-amber-50 border-amber-200 text-amber-900'
+            }`}
+          >
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-semibold">{issue.mensagem}</span>{' '}
+              <span className="opacity-90">{issue.sugestao}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const showEditor = layoutMode === 'dividido' || layoutMode === 'editor';
   const showPreview = layoutMode === 'dividido' || layoutMode === 'previa';
 
@@ -1669,8 +1813,8 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                   : saveFeedback === 'saved'
                     ? cloudSyncStatus === 'error'
                       ? 'Salvo localmente'
-                      : 'Decreto salvo'
-                    : 'Salvar decreto'}
+                      : 'Minuta salva'
+                    : 'Salvar minuta'}
               </span>
             </button>
 
@@ -1678,7 +1822,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               type="button"
               onClick={() => void handleExplicitSaveAsNew()}
               disabled={savingNow}
-              title="Salva uma nova cópia separada deste decreto na nuvem"
+              title="Salva uma nova cópia separada desta minuta na nuvem"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60 rounded-md transition-colors whitespace-nowrap shrink-0"
             >
               {saveFeedback === 'cloned' ? (
@@ -1705,7 +1849,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
             >
               <FolderOpen className="w-3.5 h-3.5 shrink-0" />
               <span className="tabular-nums">
-                Decretos salvos ({cloudNormas.length})
+                Minutas salvas ({cloudNormas.length})
               </span>
               {savedLibraryOpen ? (
                 <ChevronDown className="w-3.5 h-3.5 shrink-0" />
@@ -1800,19 +1944,49 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 tabular-nums">
-            <span>{audit.totalArtigos} artigos</span>
-            <span aria-hidden="true">·</span>
-            <span
-              className={
-                audit.erros > 0
-                  ? 'font-medium text-red-700'
-                  : 'font-medium text-emerald-700'
-              }
-            >
-              {audit.erros === 0
-                ? 'Sem erros formais'
-                : `${audit.erros} ${audit.erros === 1 ? 'erro formal' : 'erros formais'}`}
+            <span>
+              {audit.totalArtigos}{' '}
+              {isTech
+                ? audit.totalArtigos === 1
+                  ? 'item'
+                  : 'itens'
+                : audit.totalArtigos === 1
+                  ? 'artigo'
+                  : 'artigos'}
             </span>
+            <span aria-hidden="true">·</span>
+            <button
+              type="button"
+              onClick={() => setValidationPanelOpen((v) => !v)}
+              aria-expanded={validationPanelOpen}
+              title={`Verificar requisitos formais dos campos para ${doc.tipo}`}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-colors whitespace-nowrap ${
+                fieldValidation.erros > 0
+                  ? 'bg-red-50 border-red-200 text-red-800 hover:bg-red-100 font-medium'
+                  : fieldValidation.alertas > 0
+                    ? 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100 font-medium'
+                    : 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100 font-medium'
+              }`}
+            >
+              {fieldValidation.erros === 0 && fieldValidation.alertas === 0 ? (
+                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              ) : (
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              )}
+              <span>
+                {fieldValidation.erros > 0
+                  ? `${fieldValidation.erros} ${
+                      fieldValidation.erros === 1
+                        ? 'campo obrigatório pendente'
+                        : 'campos obrigatórios pendentes'
+                    }`
+                  : fieldValidation.alertas > 0
+                    ? `Campos ok (${fieldValidation.alertas} ${
+                        fieldValidation.alertas === 1 ? 'alerta' : 'alertas'
+                      })`
+                    : 'Requisitos do tipo ok'}
+              </span>
+            </button>
             <span aria-hidden="true">·</span>
             <button
               type="button"
@@ -1832,6 +2006,26 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                         ? 'apontamento linguístico'
                         : 'apontamentos linguísticos'
                     }`}
+              </span>
+            </button>
+            <span aria-hidden="true">·</span>
+            <button
+              type="button"
+              onClick={handleOpenChecklist}
+              title="Abrir Checklist de Conformidade (LC nº 95/1998)"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-colors whitespace-nowrap ${
+                rightPaneMode === 'checklist'
+                  ? 'bg-slate-900 border-slate-900 text-white font-medium'
+                  : complianceChecklist.totalPendentes === 0 &&
+                      complianceChecklist.totalParciais === 0
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100 font-medium'
+                    : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50 font-medium'
+              }`}
+            >
+              <ClipboardCheck className="w-3.5 h-3.5 shrink-0" />
+              <span className="tabular-nums">
+                Checklist ({complianceChecklist.totalConformes}/
+                {complianceChecklist.totalItems})
               </span>
             </button>
             <span aria-hidden="true">·</span>
@@ -1873,6 +2067,141 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
         )}
       </div>
 
+      {validationPanelOpen && (
+        <section className="no-print bg-white border border-slate-200 rounded-lg overflow-hidden">
+          <div className="px-5 py-3.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <ShieldCheck className="w-4 h-4 text-slate-700 shrink-0" />
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">
+                  Validação de Requisitos Formais — {doc.tipo}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Referência normativa: {fieldValidation.normaRegente} ·{' '}
+                  {fieldValidation.erros} erro(s) obrigatório(s),{' '}
+                  {fieldValidation.alertas} alerta(s)
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setValidationPanelOpen(false)}
+              className="p-1.5 text-slate-500 hover:text-slate-900 rounded"
+              aria-label="Fechar painel de validação formal"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="p-5 space-y-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+              {(
+                [
+                  'numero',
+                  'data',
+                  'esfera',
+                  'ementa',
+                  'autoridade',
+                  'fundamentoLegal',
+                  'ordemExecucao',
+                  'assinante',
+                ] as ValidatableDocFieldKey[]
+              ).map((fKey) => {
+                const rule = fieldValidation.rules[fKey];
+                const hasErr = (fieldValidation.issuesByField[fKey] || []).some(
+                  (i) => i.severidade === 'erro'
+                );
+                const hasAlert = (
+                  fieldValidation.issuesByField[fKey] || []
+                ).some((i) => i.severidade === 'alerta');
+                return (
+                  <button
+                    key={fKey}
+                    type="button"
+                    onClick={() => handleLocateField(fKey)}
+                    className={`text-left px-3 py-2 rounded border transition-colors ${
+                      hasErr
+                        ? 'bg-red-50/70 border-red-200 text-red-950 hover:bg-red-50'
+                        : hasAlert
+                          ? 'bg-amber-50/70 border-amber-200 text-amber-950 hover:bg-amber-50'
+                          : 'bg-slate-50 border-slate-200 text-slate-800 hover:bg-slate-100'
+                    }`}
+                  >
+                    <div className="font-medium truncate">{rule.label}</div>
+                    <div className="text-[11px] opacity-80">
+                      {rule.requirement === 'obrigatorio'
+                        ? hasErr
+                          ? 'Obrigatório (pendente)'
+                          : 'Obrigatório (ok)'
+                        : rule.requirement === 'recomendado'
+                          ? 'Recomendado'
+                          : 'Opcional neste tipo'}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {fieldValidation.issues.length === 0 ? (
+              <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-md flex items-start gap-2.5 text-xs text-emerald-950">
+                <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-semibold">
+                    Todos os requisitos formais de {doc.tipo} estão atendidos.
+                  </div>
+                  <p className="text-emerald-800 mt-0.5">
+                    {fieldValidation.checksPassed.join(' · ')}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-200 border border-slate-200 rounded-md overflow-hidden">
+                {fieldValidation.issues.map((issue) => (
+                  <div
+                    key={issue.id}
+                    className="px-4 py-3 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                  >
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`px-1.5 py-0.5 rounded font-semibold uppercase text-[10px] ${
+                            issue.severidade === 'erro'
+                              ? 'bg-red-100 text-red-800'
+                              : issue.severidade === 'alerta'
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-slate-100 text-slate-700'
+                          }`}
+                        >
+                          {issue.severidade === 'erro'
+                            ? 'Obrigatório / Erro'
+                            : issue.severidade === 'alerta'
+                              ? 'Alerta'
+                              : 'Recomendação'}
+                        </span>
+                        <span className="font-semibold text-slate-900">
+                          {issue.fieldLabel}
+                        </span>
+                        <span className="text-slate-500">· {issue.regra}</span>
+                      </div>
+                      <p className="text-slate-800">{issue.mensagem}</p>
+                      <p className="text-slate-500">{issue.sugestao}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleLocateField(issue.fieldSelector)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-300 hover:bg-slate-100 rounded transition-colors whitespace-nowrap shrink-0 self-start sm:self-center"
+                    >
+                      <LocateFixed className="w-3.5 h-3.5" />
+                      <span>Ir ao campo</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
       {savedLibraryOpen && (
         <section className="no-print bg-white border border-slate-200 rounded-lg overflow-hidden">
           <div className="px-5 py-3.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
@@ -1880,10 +2209,10 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               <Cloud className="w-4 h-4 text-slate-700 shrink-0" />
               <div>
                 <h3 className="text-sm font-semibold text-slate-900">
-                  Decretos e Minutas Salvas na Conta
+                  Leis, Decretos, Regimentos e Normas Salvos
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Troque de decreto a qualquer momento ou recupere versões anteriores salvas automaticamente
+                  Troque de documento a qualquer momento ou recupere versões anteriores salvas automaticamente
                 </p>
               </div>
             </div>
@@ -1891,7 +2220,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               type="button"
               onClick={() => setSavedLibraryOpen(false)}
               className="p-1.5 text-slate-500 hover:text-slate-900 rounded"
-              aria-label="Fechar painel de decretos salvos"
+              aria-label="Fechar painel de minutas salvas"
             >
               <X className="w-4 h-4" />
             </button>
@@ -1906,7 +2235,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
           <div className="divide-y divide-slate-200">
             {cloudNormas.length === 0 ? (
               <div className="px-5 py-4 text-xs text-slate-500">
-                Nenhum decreto salvo na nuvem ainda. Clique em <strong>Salvar decreto</strong> acima para gravar esta minuta.
+                Nenhuma minuta salva na nuvem ainda. Clique em <strong>Salvar minuta</strong> acima para gravar este documento.
               </div>
             ) : (
               cloudNormas.map((item) => {
@@ -1932,7 +2261,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                       </div>
                       <div className="text-xs text-slate-500 tabular-nums">
                         {item.doc.artigos.length}{' '}
-                        {item.doc.artigos.length === 1 ? 'artigo' : 'artigos'} · Atualizado em{' '}
+                        {item.doc.artigos.length === 1 ? 'dispositivo' : 'dispositivos'} · Atualizado em{' '}
                         {formatSavedDate(item.updatedAtIso)}
                       </div>
                     </div>
@@ -1948,7 +2277,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 rounded whitespace-nowrap"
                         >
                           <FolderOpen className="w-3.5 h-3.5" />
-                          <span>Abrir decreto</span>
+                          <span>Abrir minuta</span>
                         </button>
                       )}
                       {isConfirmingDelete ? (
@@ -2126,7 +2455,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               </div>
             </div>
 
-            {/* 1. Parte Preliminar */}
+            {/* 1. Parte Preliminar / Identificação Técnica */}
             <section className="bg-white border border-slate-200 rounded-lg p-5 space-y-4">
               <div
                 className={`flex flex-wrap items-center justify-between gap-3 ${
@@ -2135,10 +2464,14 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               >
                 <div>
                   <h2 className="text-sm font-semibold text-slate-900">
-                    1. Parte Preliminar (Epígrafe, Ementa e Preâmbulo)
+                    {isTech
+                      ? '1. Identificação Técnica e Escopo (ABNT NBR 6024)'
+                      : '1. Parte Preliminar (Epígrafe, Ementa e Preâmbulo)'}
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Identificação oficial, resumo do objeto e competência jurídica
+                    {isTech
+                      ? 'Quadro técnico de controle, setor emitente, normas de referência e objetivo'
+                      : 'Identificação oficial, resumo do objeto e competência jurídica'}
                   </p>
                 </div>
                 <button
@@ -2163,49 +2496,109 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Espécie Normativa
+                    Espécie / Tipo de Documento
                   </label>
-                  <select
-                    value={doc.tipo}
-                    onChange={(e) => handleTipoChange(e.target.value as NormaTipo)}
-                    className="w-full text-sm bg-white border border-slate-300 rounded-md px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
-                  >
-                    <option value="Decreto">Decreto</option>
-                    <option value="Instrução Normativa">Instrução Normativa</option>
-                    <option value="Portaria">Portaria</option>
-                    <option value="Resolução">Resolução</option>
-                    <option value="Norma Interna">Norma Interna</option>
-                  </select>
+                  <NormaTipoSelect value={doc.tipo} onChange={handleTipoChange} />
                 </div>
-                <div>
+                <div data-review-field="numero">
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Número
+                    {isTech ? 'Código / Número' : 'Número'}
+                    {renderRequirementTag('numero')}
                   </label>
                   <input
                     type="text"
                     value={doc.numero}
                     onChange={(e) => updateField('numero', e.target.value)}
-                    placeholder="Ex.: 1.842"
-                    className="w-full text-sm bg-white border border-slate-300 rounded-md px-3 py-2 text-slate-900 font-mono tabular-nums focus:outline-none focus:ring-2 focus:ring-slate-900"
+                    placeholder={isTech ? 'Ex.: IT-001/2026' : 'Ex.: 1.842'}
+                    className={`w-full text-sm bg-white border rounded-md px-3 py-2 text-slate-900 font-mono tabular-nums focus:outline-none focus:ring-2 focus:ring-slate-900 ${
+                      (fieldValidation.issuesByField.numero || []).some(
+                        (i) => i.severidade === 'erro'
+                      )
+                        ? 'border-red-400'
+                        : 'border-slate-300'
+                    }`}
                   />
+                  {renderFieldValidationAlerts('numero')}
                 </div>
-                <div>
+                <div data-review-field="data">
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Data por Extenso
+                    {isTech ? 'Data / Revisão' : 'Data por Extenso'}
+                    {renderRequirementTag('data')}
                   </label>
                   <input
                     type="text"
                     value={doc.data}
                     onChange={(e) => updateField('data', e.target.value)}
-                    placeholder="DE 17 DE NOVEMBRO DE 2026"
-                    className="w-full text-sm bg-white border border-slate-300 rounded-md px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                    placeholder={
+                      isTech
+                        ? 'REVISÃO 00 — NOVEMBRO/2026'
+                        : 'DE 17 DE NOVEMBRO DE 2026'
+                    }
+                    className={`w-full text-sm bg-white border rounded-md px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900 ${
+                      (fieldValidation.issuesByField.data || []).some(
+                        (i) => i.severidade === 'erro'
+                      )
+                        ? 'border-red-400'
+                        : 'border-slate-300'
+                    }`}
                   />
+                  {renderFieldValidationAlerts('data')}
                 </div>
+              </div>
+
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-md flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                <div className="space-y-0.5">
+                  <div className="font-semibold text-slate-900">
+                    Padrão ativo: {activeSpec.normaRegente}
+                  </div>
+                  <p className="text-slate-600 leading-relaxed">
+                    {activeSpec.resumoFormatacao}
+                  </p>
+                </div>
+                {matchingTemplate && matchingTemplate.tipo !== 'Decreto' && (
+                  <button
+                    type="button"
+                    onClick={() => void handleLoadTemplate(matchingTemplate.id)}
+                    className="px-2.5 py-1.5 text-xs font-medium text-slate-800 bg-white border border-slate-300 hover:bg-slate-100 rounded transition-colors whitespace-nowrap shrink-0 self-start sm:self-center"
+                  >
+                    Carregar modelo de {doc.tipo}
+                  </button>
+                )}
+              </div>
+
+              <div data-review-field="esfera">
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  {isTech
+                    ? 'Área / Setor Emitente (Quadro Técnico)'
+                    : 'Esfera / Órgão Emitente'}
+                  {renderRequirementTag('esfera')}
+                </label>
+                <input
+                  type="text"
+                  value={doc.esfera}
+                  onChange={(e) => updateField('esfera', e.target.value)}
+                  placeholder={
+                    isTech
+                      ? 'Ex.: Controle de Qualidade / Coordenação Técnica'
+                      : 'Ex.: Executivo Municipal / Órgão Central / Conselho'
+                  }
+                  className={`w-full text-sm bg-white border rounded-md px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900 ${
+                    (fieldValidation.issuesByField.esfera || []).some(
+                      (i) => i.severidade === 'erro'
+                    )
+                      ? 'border-red-400'
+                      : 'border-slate-300'
+                  }`}
+                />
+                {renderFieldValidationAlerts('esfera')}
               </div>
 
               <div data-review-field="ementa" className="space-y-1.5">
                 <label className="block text-xs font-medium text-slate-700">
-                  Ementa (Resumo objetivo do conteúdo — Art. 5º da LC 95/98)
+                  {isTech
+                    ? 'Objetivo / Escopo (ABNT NBR 6024)'
+                    : 'Ementa (Resumo objetivo do conteúdo — Art. 5º da LC 95/98)'}
+                  {renderRequirementTag('ementa')}
                 </label>
                 <ReviewedTextarea
                   rows={2}
@@ -2213,12 +2606,16 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                   onChange={(e) => updateField('ementa', e.target.value)}
                   findings={review.byField['ementa'] || []}
                   highlightEnabled={highlightReview}
-                  {...getFieldMarkProps('ementa', 'Ementa')}
+                  {...getFieldMarkProps(
+                    'ementa',
+                    isTech ? 'Objetivo / Escopo' : 'Ementa'
+                  )}
                   onApplyFix={handleApplyReviewFix}
                   onIgnoreFinding={handleIgnoreFinding}
                   onAddToDictionary={addToDictionary}
                   {...nativeFieldProps}
                 />
+                {renderFieldValidationAlerts('ementa')}
                 {showInlineHints && (
                   <FieldReviewHints
                     findings={review.byField['ementa'] || []}
@@ -2231,7 +2628,10 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div data-review-field="autoridade" className="space-y-1.5">
                   <label className="block text-xs font-medium text-slate-700">
-                    Autoridade Signatária (Preâmbulo)
+                    {isTech
+                      ? 'Responsável Técnico / Aprovador'
+                      : 'Autoridade Signatária (Preâmbulo)'}
+                    {renderRequirementTag('autoridade')}
                   </label>
                   <ReviewedInput
                     type="text"
@@ -2239,13 +2639,23 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                     onChange={(e) => updateField('autoridade', e.target.value)}
                     findings={review.byField['autoridade'] || []}
                     highlightEnabled={highlightReview}
-                    {...getFieldMarkProps('autoridade', 'Autoridade Signatária')}
+                    {...getFieldMarkProps(
+                      'autoridade',
+                      isTech ? 'Responsável Técnico' : 'Autoridade Signatária'
+                    )}
                     onApplyFix={handleApplyReviewFix}
                     onIgnoreFinding={handleIgnoreFinding}
                     onAddToDictionary={addToDictionary}
                     {...nativeFieldProps}
-                    className="w-full text-sm bg-white border border-slate-300 rounded-md px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                    className={`w-full text-sm bg-white border rounded-md px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900 ${
+                      (fieldValidation.issuesByField.autoridade || []).some(
+                        (i) => i.severidade === 'erro'
+                      )
+                        ? 'border-red-400'
+                        : 'border-slate-300'
+                    }`}
                   />
+                  {renderFieldValidationAlerts('autoridade')}
                   {showInlineHints && (
                     <FieldReviewHints
                       findings={review.byField['autoridade'] || []}
@@ -2254,23 +2664,36 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                     />
                   )}
                 </div>
-                <div>
+                <div data-review-field="ordemExecucao">
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    Ordem de Execução
+                    {isTech
+                      ? 'Faixa de Aprovação / Destinação'
+                      : 'Ordem de Execução / Sanção'}
+                    {renderRequirementTag('ordemExecucao')}
                   </label>
                   <input
                     type="text"
                     value={doc.ordemExecucao}
                     onChange={(e) => updateField('ordemExecucao', e.target.value)}
                     {...nativeFieldProps}
-                    className="w-full text-sm bg-white border border-slate-300 rounded-md px-3 py-2 text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-slate-900"
+                    className={`w-full text-sm bg-white border rounded-md px-3 py-2 text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-slate-900 ${
+                      (fieldValidation.issuesByField.ordemExecucao || []).some(
+                        (i) => i.severidade === 'erro'
+                      )
+                        ? 'border-red-400'
+                        : 'border-slate-300'
+                    }`}
                   />
+                  {renderFieldValidationAlerts('ordemExecucao')}
                 </div>
               </div>
 
               <div data-review-field="fundamentoLegal" className="space-y-1.5">
                 <label className="block text-xs font-medium text-slate-700">
-                  Fundamento Legal de Competência (use Enter para separar blocos ou CONSIDERANDOs)
+                  {isTech
+                    ? 'Normas e Documentos de Referência (ABNT, ISO, legislação sanitária/técnica)'
+                    : 'Fundamento Legal de Competência (use Enter para separar blocos ou CONSIDERANDOs)'}
+                  {renderRequirementTag('fundamentoLegal')}
                 </label>
                 <ReviewedTextarea
                   rows={3}
@@ -2280,13 +2703,16 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                   highlightEnabled={highlightReview}
                   {...getFieldMarkProps(
                     'fundamentoLegal',
-                    'Preâmbulo / Fundamento Legal'
+                    isTech
+                      ? 'Normas de Referência'
+                      : 'Preâmbulo / Fundamento Legal'
                   )}
                   onApplyFix={handleApplyReviewFix}
                   onIgnoreFinding={handleIgnoreFinding}
                   onAddToDictionary={addToDictionary}
                   {...nativeFieldProps}
                 />
+                {renderFieldValidationAlerts('fundamentoLegal')}
                 {showInlineHints && (
                   <FieldReviewHints
                     findings={review.byField['fundamentoLegal'] || []}
@@ -2299,8 +2725,11 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               )}
             </section>
 
-            {/* 2. Parte Normativa (Articulado) */}
-            <section className="bg-white border border-slate-200 rounded-lg p-5 space-y-5">
+            {/* 2. Parte Normativa (Articulado ou Estrutura Progressiva) */}
+            <section
+              data-review-field="artigos"
+              className="bg-white border border-slate-200 rounded-lg p-5 space-y-5"
+            >
               <div
                 className={`flex flex-wrap items-center justify-between gap-3 ${
                   collapsedSections.normativa ? '' : 'border-b border-slate-200 pb-3'
@@ -2308,10 +2737,14 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               >
                 <div>
                   <h2 className="text-sm font-semibold text-slate-900">
-                    2. Parte Normativa (Títulos, Capítulos, Seções e Artigos)
+                    {isTech
+                      ? '2. Estrutura Técnica e Procedimentos (Numeração Progressiva 1., 1.1)'
+                      : '2. Parte Normativa (Títulos, Capítulos, Seções e Artigos)'}
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Numeração ordinal/cardinal e pontuação aplicadas automaticamente
+                    {isTech
+                      ? 'Seções (1.), itens (1.1), subitens (1.1.1) e alíneas conforme ABNT NBR 6024'
+                      : 'Numeração ordinal/cardinal e pontuação aplicadas automaticamente'}
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
@@ -2328,8 +2761,16 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                       )}
                       <span>
                         {allDivisionsCollapsed
-                          ? `Expandir ${DIVISION_KIND_PLURAL[activeDivisionKind!]}`
-                          : `Recolher ${DIVISION_KIND_PLURAL[activeDivisionKind!]}`}
+                          ? `Expandir ${
+                              isTech
+                                ? 'seções'
+                                : DIVISION_KIND_PLURAL[activeDivisionKind!]
+                            }`
+                          : `Recolher ${
+                              isTech
+                                ? 'seções'
+                                : DIVISION_KIND_PLURAL[activeDivisionKind!]
+                            }`}
                       </span>
                     </button>
                   )}
@@ -2339,7 +2780,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors whitespace-nowrap shrink-0"
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    <span>Novo Título</span>
+                    <span>{isTech ? 'Nova Seção' : 'Novo Título'}</span>
                   </button>
                   <button
                     type="button"
@@ -2347,7 +2788,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0"
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    <span>Adicionar Artigo</span>
+                    <span>{isTech ? 'Adicionar Item' : 'Adicionar Artigo'}</span>
                   </button>
                   <button
                     type="button"
@@ -2369,22 +2810,31 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
 
               {!collapsedSections.normativa && (
               <div className="space-y-5">
+                {renderFieldValidationAlerts('artigos')}
                 {divisionGroups.map((group) => {
                   const isCollapsed =
                     hasDivisionsInDoc && Boolean(collapsedTitulos[group.key]);
-                  const firstArtNum = formatArtigoNumero(
-                    group.items[0].globalIndex + 1,
+                  const getItemDisplayLabel = (globalIdx: number, sufixo?: string) =>
+                    progressiveLayout?.[globalIdx]
+                      ? progressiveLayout[globalIdx].itemLabel.replace(/\.$/, '')
+                      : formatArtigoNumero(globalIdx + 1, sufixo).replace(/\.$/, '');
+                  const firstArtNum = getItemDisplayLabel(
+                    group.items[0].globalIndex,
                     group.items[0].art.sufixo
-                  ).replace(/\.$/, '');
+                  );
                   const lastItem = group.items[group.items.length - 1];
-                  const lastArtNum = formatArtigoNumero(
-                    lastItem.globalIndex + 1,
+                  const lastArtNum = getItemDisplayLabel(
+                    lastItem.globalIndex,
                     lastItem.art.sufixo
-                  ).replace(/\.$/, '');
+                  );
                   const rangeLabel =
                     group.items.length === 1
-                      ? firstArtNum
-                      : `${firstArtNum} a ${lastArtNum}`;
+                      ? isTech
+                        ? `Item ${firstArtNum}`
+                        : firstArtNum
+                      : isTech
+                        ? `Itens ${firstArtNum} a ${lastArtNum}`
+                        : `${firstArtNum} a ${lastArtNum}`;
                   const groupFindingsCount = group.items.reduce((acc, it) => {
                     const artId = it.art.id;
                     const artFindings = review.findings.filter((f) =>
@@ -2398,38 +2848,70 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                     aIdx: number,
                     localIdx: number
                   ) => {
-                    const artLabel = formatArtigoNumero(aIdx + 1, art.sufixo);
+                    const progLayout = progressiveLayout?.[aIdx] || null;
+                    const artLabel = progLayout
+                      ? progLayout.hasSections
+                        ? `Item ${progLayout.itemLabel}`
+                        : `Etapa ${progLayout.itemLabel}`
+                      : formatArtigoNumero(aIdx + 1, art.sufixo);
                     const divisions: Array<{
                       kind: 'titulo' | 'capitulo' | 'secao' | 'subsecao';
                       label: string;
                       placeholder: string;
                       value: string | undefined;
-                    }> = [
-                      {
-                        kind: 'titulo',
-                        label: 'Título',
-                        placeholder: 'Ex.: TÍTULO I - DAS DISPOSIÇÕES GERAIS',
-                        value: art.titulo,
-                      },
-                      {
-                        kind: 'capitulo',
-                        label: 'Capítulo',
-                        placeholder: 'Ex.: CAPÍTULO I - DOS PRINCÍPIOS',
-                        value: art.capitulo,
-                      },
-                      {
-                        kind: 'secao',
-                        label: 'Seção',
-                        placeholder: 'Ex.: SEÇÃO I - DA COMPETÊNCIA',
-                        value: art.secao,
-                      },
-                      {
-                        kind: 'subsecao',
-                        label: 'Subseção',
-                        placeholder: 'Ex.: SUBSEÇÃO I - DOS PRAZOS',
-                        value: art.subsecao,
-                      },
-                    ];
+                    }> = isTech
+                      ? [
+                          {
+                            kind: 'titulo',
+                            label: 'Seção',
+                            placeholder: 'Ex.: OBJETIVO / PROCEDIMENTO OPERACIONAL',
+                            value: art.titulo,
+                          },
+                          {
+                            kind: 'capitulo',
+                            label: 'Subseção',
+                            placeholder: 'Ex.: PREPARAÇÃO E MATERIAIS NECESSÁRIOS',
+                            value: art.capitulo,
+                          },
+                          {
+                            kind: 'secao',
+                            label: 'Tópico',
+                            placeholder: 'Ex.: CONDIÇÕES DE SEGURANÇA',
+                            value: art.secao,
+                          },
+                          {
+                            kind: 'subsecao',
+                            label: 'Subtópico',
+                            placeholder: 'Ex.: Pontos críticos de controle',
+                            value: art.subsecao,
+                          },
+                        ]
+                      : [
+                          {
+                            kind: 'titulo',
+                            label: 'Título',
+                            placeholder: 'Ex.: TÍTULO I - DAS DISPOSIÇÕES GERAIS',
+                            value: art.titulo,
+                          },
+                          {
+                            kind: 'capitulo',
+                            label: 'Capítulo',
+                            placeholder: 'Ex.: CAPÍTULO I - DOS PRINCÍPIOS',
+                            value: art.capitulo,
+                          },
+                          {
+                            kind: 'secao',
+                            label: 'Seção',
+                            placeholder: 'Ex.: SEÇÃO I - DA COMPETÊNCIA',
+                            value: art.secao,
+                          },
+                          {
+                            kind: 'subsecao',
+                            label: 'Subseção',
+                            placeholder: 'Ex.: SUBSEÇÃO I - DOS PRAZOS',
+                            value: art.subsecao,
+                          },
+                        ];
 
                     return (
                       <div
@@ -2449,7 +2931,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                               }
                               className="px-2 py-1 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded transition-colors whitespace-nowrap"
                             >
-                              + Título
+                              {isTech ? '+ Seção' : '+ Título'}
                             </button>
                           )}
                           {art.capitulo === undefined && (
@@ -2460,7 +2942,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                               }
                               className="px-2 py-1 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded transition-colors whitespace-nowrap"
                             >
-                              + Capítulo
+                              {isTech ? '+ Subseção' : '+ Capítulo'}
                             </button>
                           )}
                           {art.secao === undefined && (
@@ -2471,7 +2953,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                               }
                               className="px-2 py-1 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded transition-colors whitespace-nowrap"
                             >
-                              + Seção
+                              {isTech ? '+ Tópico' : '+ Seção'}
                             </button>
                           )}
                           {art.subsecao === undefined && (
@@ -2482,7 +2964,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                               }
                               className="px-2 py-1 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded transition-colors whitespace-nowrap"
                             >
-                              + Subseção
+                              {isTech ? '+ Subtópico' : '+ Subseção'}
                             </button>
                           )}
                         </div>
@@ -2569,12 +3051,16 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                           onChange={(e) =>
                             updateArtigo(art.id, { caput: e.target.value })
                           }
-                          placeholder="Redação do caput do artigo..."
+                          placeholder={
+                            isTech
+                              ? 'Descrição da etapa, requisito técnico ou procedimento...'
+                              : 'Redação do caput do artigo...'
+                          }
                           findings={review.byField[`caput:${art.id}`] || []}
                           highlightEnabled={highlightReview}
                           {...getFieldMarkProps(
                             `caput:${art.id}`,
-                            `${artLabel.replace(/\.$/, '')} (caput)`
+                            `${artLabel.replace(/\.$/, '')} (${isTech ? 'texto' : 'caput'})`
                           )}
                           onApplyFix={handleApplyReviewFix}
                           onIgnoreFinding={handleIgnoreFinding}
@@ -2590,7 +3076,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                         )}
                       </div>
 
-                      {/* Incisos */}
+                      {/* Incisos / Alíneas */}
                       {art.incisos.length > 0 && (
                         <div className="pl-3 sm:pl-4 space-y-3 border-l border-slate-200">
                           {art.incisos.map((inc, iIdx) => (
@@ -2601,7 +3087,9 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                               >
                                 <div className="flex items-start gap-2">
                                   <span className="font-mono text-xs font-medium text-slate-600 pt-2 min-w-10 whitespace-nowrap shrink-0">
-                                    {toRoman(iIdx + 1)} -
+                                    {isTech
+                                      ? `${toLetter(iIdx)})`
+                                      : `${toRoman(iIdx + 1)} -`}
                                   </span>
                                   <ReviewedTextarea
                                     rows={1}
@@ -2609,14 +3097,20 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                                     onChange={(e) =>
                                       updateInciso(art.id, inc.id, e.target.value)
                                     }
-                                    placeholder="Texto do inciso em minúscula inicial..."
+                                    placeholder={
+                                      isTech
+                                        ? 'Texto da alínea / requisito...'
+                                        : 'Texto do inciso em minúscula inicial...'
+                                    }
                                     findings={
                                       review.byField[`inciso:${art.id}:${inc.id}`] || []
                                     }
                                     highlightEnabled={highlightReview}
                                     {...getFieldMarkProps(
                                       `inciso:${art.id}:${inc.id}`,
-                                      `${artLabel.replace(/\.$/, '')}, inciso ${toRoman(iIdx + 1)}`
+                                      isTech
+                                        ? `${artLabel.replace(/\.$/, '')}, alínea "${toLetter(iIdx)}"`
+                                        : `${artLabel.replace(/\.$/, '')}, inciso ${toRoman(iIdx + 1)}`
                                     )}
                                     onApplyFix={handleApplyReviewFix}
                                     onIgnoreFinding={handleIgnoreFinding}
@@ -2630,7 +3124,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                                     onClick={() => addAlinea(art.id, inc.id)}
                                     className="px-2 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 border border-slate-200 rounded-md whitespace-nowrap shrink-0"
                                   >
-                                    + Alínea
+                                    {isTech ? '+ Marcador' : '+ Alínea'}
                                   </button>
                                   <button
                                     type="button"
@@ -2746,11 +3240,14 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                                 >
                                   <div className="flex items-start gap-2">
                                     <span className="font-mono text-xs font-medium text-slate-600 pt-2 w-28 whitespace-nowrap shrink-0">
-                                      {formatParagrafoNumero(
-                                        pIdx,
-                                        art.paragrafos.length,
-                                        par.sufixo
-                                      )}
+                                      {isTech
+                                        ? progLayout?.subItemLabels[pIdx] ||
+                                          `${aIdx + 1}.${pIdx + 1}`
+                                        : formatParagrafoNumero(
+                                            pIdx,
+                                            art.paragrafos.length,
+                                            par.sufixo
+                                          )}
                                     </span>
                                     <ReviewedTextarea
                                       rows={2}
@@ -2762,7 +3259,11 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                                           e.target.value
                                         )
                                       }
-                                      placeholder="Texto do parágrafo..."
+                                      placeholder={
+                                        isTech
+                                          ? 'Texto do subitem...'
+                                          : 'Texto do parágrafo...'
+                                      }
                                       findings={
                                         review.byField[
                                           `paragrafo:${art.id}:${par.id}`
@@ -2771,11 +3272,16 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                                       highlightEnabled={highlightReview}
                                       {...getFieldMarkProps(
                                         `paragrafo:${art.id}:${par.id}`,
-                                        `${artLabel.replace(/\.$/, '')}, ${formatParagrafoNumero(
-                                          pIdx,
-                                          art.paragrafos.length,
-                                          par.sufixo
-                                        ).replace(/\.$/, '')}`
+                                        isTech
+                                          ? `${artLabel.replace(/\.$/, '')}, subitem ${
+                                              progLayout?.subItemLabels[pIdx] ||
+                                              `${aIdx + 1}.${pIdx + 1}`
+                                            }`
+                                          : `${artLabel.replace(/\.$/, '')}, ${formatParagrafoNumero(
+                                              pIdx,
+                                              art.paragrafos.length,
+                                              par.sufixo
+                                            ).replace(/\.$/, '')}`
                                       )}
                                       onApplyFix={handleApplyReviewFix}
                                       onIgnoreFinding={handleIgnoreFinding}
@@ -2789,10 +3295,14 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                                       onClick={() =>
                                         addParagrafoInciso(art.id, par.id)
                                       }
-                                      title="Adicionar inciso vinculado a este parágrafo"
+                                      title={
+                                        isTech
+                                          ? 'Adicionar alínea vinculada a este subitem'
+                                          : 'Adicionar inciso vinculado a este parágrafo'
+                                      }
                                       className="px-2 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 border border-slate-200 rounded-md whitespace-nowrap shrink-0"
                                     >
-                                      + Inciso
+                                      {isTech ? '+ Alínea' : '+ Inciso'}
                                     </button>
                                     <button
                                       type="button"
@@ -3009,19 +3519,21 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                             onClick={() => addInciso(art.id)}
                             className="px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded transition-colors whitespace-nowrap"
                           >
-                            + Inciso no caput (I, II)
+                            {isTech
+                              ? '+ Alínea (a, b)'
+                              : '+ Inciso no caput (I, II)'}
                           </button>
                           <button
                             type="button"
                             onClick={() => addParagrafo(art.id)}
                             className="px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded transition-colors whitespace-nowrap"
                           >
-                            + Parágrafo (§)
+                            {isTech ? '+ Subitem (1.1.1)' : '+ Parágrafo (§)'}
                           </button>
                           <button
                             type="button"
                             onClick={() => triggerQuickArticleImageUpload(art.id)}
-                            title="Inserir imagem ou carimbo logo abaixo deste artigo"
+                            title="Inserir imagem, diagrama ou carimbo logo abaixo"
                             className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded transition-colors whitespace-nowrap"
                           >
                             <ImagePlus className="w-3 h-3" />
@@ -3030,11 +3542,15 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                           <button
                             type="button"
                             onClick={() => insertArtigoAt(aIdx + 1, true)}
-                            title="Inserir novo artigo logo abaixo deste"
+                            title={
+                              isTech
+                                ? 'Inserir novo item técnico logo abaixo deste'
+                                : 'Inserir novo artigo logo abaixo deste'
+                            }
                             className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded transition-colors whitespace-nowrap"
                           >
                             <Plus className="w-3 h-3" />
-                            <span>Artigo após este</span>
+                            <span>{isTech ? 'Item após este' : 'Artigo após este'}</span>
                           </button>
                         </div>
                       </div>
@@ -3052,9 +3568,11 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                   );
                 }
 
-                const kindLabel = activeDivisionKind
-                  ? DIVISION_KIND_SINGULAR[activeDivisionKind]
-                  : 'Seção';
+                const kindLabel = isTech
+                  ? 'Seção'
+                  : activeDivisionKind
+                    ? DIVISION_KIND_SINGULAR[activeDivisionKind]
+                    : 'Seção';
 
                 return (
                   <div
@@ -3082,7 +3600,14 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                         </span>
                         <span className="text-xs font-mono tabular-nums text-slate-500 whitespace-nowrap shrink-0">
                           · {rangeLabel} ({group.items.length}{' '}
-                          {group.items.length === 1 ? 'artigo' : 'artigos'})
+                          {isTech
+                            ? group.items.length === 1
+                              ? 'item'
+                              : 'itens'
+                            : group.items.length === 1
+                              ? 'artigo'
+                              : 'artigos'}
+                          )
                         </span>
                         {isCollapsed && groupFindingsCount > 0 && (
                           <span className="px-1.5 py-0.5 text-[11px] font-medium text-amber-800 bg-amber-100 border border-amber-200 rounded whitespace-nowrap shrink-0">
@@ -3106,7 +3631,11 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                           className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded transition-colors whitespace-nowrap shrink-0"
                         >
                           <Plus className="w-3 h-3" />
-                          <span>Artigo neste {kindLabel}</span>
+                          <span>
+                            {isTech
+                              ? `Item nesta ${kindLabel}`
+                              : `Artigo neste ${kindLabel}`}
+                          </span>
                         </button>
                         <button
                           type="button"
@@ -3171,10 +3700,16 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               {!collapsedSections.final && (
                 <>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div
+                data-review-field="vigencia"
+                className="grid grid-cols-1 sm:grid-cols-2 gap-3"
+              >
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Regra de Vigência (Art. 8º LC 95/98)
+                    {isTech
+                      ? 'Vigência e Controle de Revisão'
+                      : 'Regra de Vigência (Art. 8º LC 95/98)'}
+                    {renderRequirementTag('vigencia')}
                   </label>
                   <select
                     value={doc.vigenciaTipo}
@@ -3235,11 +3770,14 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                   </div>
                 )}
               </div>
+              {renderFieldValidationAlerts('vigencia')}
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="block text-xs font-medium text-slate-700">
-                    Revogações Expressas (Art. 9º da LC 95/98 — nunca use &quot;em contrário&quot;)
+                    {isTech
+                      ? 'Documentos Substituídos / Cancelados (opcional)'
+                      : 'Revogações Expressas (Art. 9º da LC 95/98 — nunca use "em contrário")'}
                   </label>
                   <button
                     type="button"
@@ -3251,7 +3789,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                 </div>
                 {doc.revogacoes.length === 0 && (
                   <p className="text-xs text-slate-500">
-                    Nenhuma revogação informada. Adicione apenas se o ato substituir norma anterior.
+                    Nenhuma revogação informada. Adicione apenas se o documento substituir norma ou instrução anterior.
                   </p>
                 )}
                 {doc.revogacoes.map((rev, rIdx) => (
@@ -3307,10 +3845,13 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                 ))}
               </div>
 
+              {renderFieldValidationAlerts('revogacoes')}
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
                 <div data-review-field="localAssinatura" className="space-y-1.5">
                   <label className="block text-xs font-medium text-slate-700">
                     Local e Data
+                    {renderRequirementTag('localAssinatura')}
                   </label>
                   <ReviewedInput
                     type="text"
@@ -3323,8 +3864,15 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                     onIgnoreFinding={handleIgnoreFinding}
                     onAddToDictionary={addToDictionary}
                     {...nativeFieldProps}
-                    className="w-full text-sm bg-white border border-slate-300 rounded-md px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                    className={`w-full text-sm bg-white border rounded-md px-3 py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900 ${
+                      (fieldValidation.issuesByField.localAssinatura || []).some(
+                        (i) => i.severidade === 'erro'
+                      )
+                        ? 'border-red-400'
+                        : 'border-slate-300'
+                    }`}
                   />
+                  {renderFieldValidationAlerts('localAssinatura')}
                   {showInlineHints && (
                     <FieldReviewHints
                       findings={review.byField['localAssinatura'] || []}
@@ -3333,27 +3881,43 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                     />
                   )}
                 </div>
-                <div>
+                <div data-review-field="assinante">
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Autoridade
+                    {isTech ? 'Aprovador / Signatário' : 'Autoridade'}
+                    {renderRequirementTag('assinante')}
                   </label>
                   <input
                     type="text"
                     value={doc.assinante}
                     onChange={(e) => updateField('assinante', e.target.value)}
-                    className="w-full text-sm bg-white border border-slate-300 rounded-md px-3 py-2 text-slate-900"
+                    className={`w-full text-sm bg-white border rounded-md px-3 py-2 text-slate-900 ${
+                      (fieldValidation.issuesByField.assinante || []).some(
+                        (i) => i.severidade === 'erro'
+                      )
+                        ? 'border-red-400'
+                        : 'border-slate-300'
+                    }`}
                   />
+                  {renderFieldValidationAlerts('assinante')}
                 </div>
-                <div>
+                <div data-review-field="cargoAssinante">
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Cargo
+                    {isTech ? 'Cargo / Registro Técnico' : 'Cargo'}
+                    {renderRequirementTag('cargoAssinante')}
                   </label>
                   <input
                     type="text"
                     value={doc.cargoAssinante}
                     onChange={(e) => updateField('cargoAssinante', e.target.value)}
-                    className="w-full text-sm bg-white border border-slate-300 rounded-md px-3 py-2 text-slate-900"
+                    className={`w-full text-sm bg-white border rounded-md px-3 py-2 text-slate-900 ${
+                      (fieldValidation.issuesByField.cargoAssinante || []).some(
+                        (i) => i.severidade === 'erro'
+                      )
+                        ? 'border-red-400'
+                        : 'border-slate-300'
+                    }`}
                   />
+                  {renderFieldValidationAlerts('cargoAssinante')}
                 </div>
               </div>
                 </>
@@ -3485,6 +4049,21 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                   >
                     <Eye className="w-3.5 h-3.5" />
                     <span>Prévia Oficial</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRightPaneMode('checklist')}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded transition-colors whitespace-nowrap ${
+                      rightPaneMode === 'checklist'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <ClipboardCheck className="w-3.5 h-3.5" />
+                    <span className="tabular-nums">
+                      Checklist ({complianceChecklist.totalConformes}/
+                      {complianceChecklist.totalItems})
+                    </span>
                   </button>
                   <button
                     type="button"
@@ -3660,7 +4239,13 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               </div>
             )}
 
-            {rightPaneMode === 'revisor' ? (
+            {rightPaneMode === 'checklist' ? (
+              <ChecklistConformidadePanel
+                summary={complianceChecklist}
+                onLocateField={handleLocateField}
+                onRunFullAudit={() => onAuditDraft(plainText)}
+              />
+            ) : rightPaneMode === 'revisor' ? (
               <RevisorLinguisticoPanel
                 summary={review}
                 ignoredCount={ignoredSignatures.size}
@@ -3688,20 +4273,551 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                 onRestoreSingleArtigo={handleRestoreSingleArtigo}
               />
             ) : (
-              <article className="print-sheet bg-white border border-slate-200 rounded-lg p-8 sm:p-12 font-serif text-slate-900 leading-relaxed">
+              <article
+                className={`print-sheet bg-white border border-slate-200 rounded-lg p-8 sm:p-12 text-slate-900 leading-relaxed ${
+                  isTech ? 'font-sans' : 'font-serif'
+                }`}
+              >
                 {(doc.imagens || [])
                   .filter((img) => img.posicao === 'cabecalho')
                   .map((img) => (
                     <NormaImagemPreviewBlock key={img.id} img={img} />
                   ))}
 
+                {isTech ? (
+                  <>
+                    {/* Quadro Técnico de Identificação (ABNT NBR 6024 / ISO 9001) */}
+                    <div className="border border-slate-400 rounded-xs overflow-hidden mb-6 text-xs">
+                      <div className="bg-slate-100 border-b border-slate-400 px-4 py-2.5 text-center font-bold tracking-wide uppercase text-sm text-slate-900">
+                        {formatNormaEpigrafe(doc)}
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 border-b border-slate-300">
+                        <div className="px-3 py-2 sm:border-r border-slate-300">
+                          <span className="font-semibold text-slate-700">
+                            Área / Setor Emitente:{' '}
+                          </span>
+                          <span className="text-slate-900">
+                            {doc.esfera.trim() || '—'}
+                          </span>
+                        </div>
+                        <div className="px-3 py-2 border-t sm:border-t-0 border-slate-300">
+                          <span className="font-semibold text-slate-700">
+                            Data / Revisão:{' '}
+                          </span>
+                          <span className="text-slate-900">
+                            {doc.data.trim() || '—'}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 border-b border-slate-300">
+                        <div className="px-3 py-2 sm:border-r border-slate-300">
+                          <span className="font-semibold text-slate-700">
+                            Responsável Técnico:{' '}
+                          </span>
+                          <HighlightedLegalText
+                            displayText={doc.autoridade.trim() || '—'}
+                            baseOffset={
+                              doc.autoridade.length -
+                              doc.autoridade.trimStart().length
+                            }
+                            findings={previewFindingsByField['autoridade'] || []}
+                            enabled={highlightReview}
+                            selectedFindingId={selectedFindingId}
+                            onSelectFinding={(f) => setSelectedFindingId(f.id)}
+                          />
+                        </div>
+                        <div className="px-3 py-2 border-t sm:border-t-0 border-slate-300">
+                          <span className="font-semibold text-slate-700">
+                            Vigência:{' '}
+                          </span>
+                          <span className="text-slate-900">
+                            {doc.vigenciaTipo === 'imediata'
+                              ? 'Na data da publicação / aprovação'
+                              : doc.vigenciaTipo === 'dias'
+                                ? `${Math.max(1, doc.vigenciaDias || 30)} dias após publicação`
+                                : doc.vigenciaData.trim() || 'Data definida'}
+                          </span>
+                        </div>
+                      </div>
+                      {doc.fundamentoLegal.trim() && (
+                        <div className="px-3 py-2 border-b border-slate-300">
+                          <span className="font-semibold text-slate-700">
+                            Normas de Referência:{' '}
+                          </span>
+                          <HighlightedLegalText
+                            displayText={doc.fundamentoLegal
+                              .replace(/\n+/g, '; ')
+                              .trim()}
+                            baseOffset={
+                              doc.fundamentoLegal.length -
+                              doc.fundamentoLegal.trimStart().length
+                            }
+                            findings={
+                              previewFindingsByField['fundamentoLegal'] || []
+                            }
+                            enabled={highlightReview}
+                            selectedFindingId={selectedFindingId}
+                            onSelectFinding={(f) => setSelectedFindingId(f.id)}
+                          />
+                        </div>
+                      )}
+                      {doc.ementa.trim() && (
+                        <div className="px-3 py-2.5 bg-slate-50/70">
+                          <span className="font-semibold text-slate-700">
+                            Objetivo / Escopo:{' '}
+                          </span>
+                          <HighlightedLegalText
+                            displayText={doc.ementa.trim()}
+                            baseOffset={
+                              doc.ementa.length - doc.ementa.trimStart().length
+                            }
+                            findings={previewFindingsByField['ementa'] || []}
+                            enabled={highlightReview}
+                            selectedFindingId={selectedFindingId}
+                            onSelectFinding={(f) => setSelectedFindingId(f.id)}
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    {doc.ordemExecucao.trim() && (
+                      <p className="text-xs font-bold uppercase tracking-wide text-slate-800 mb-4">
+                        {doc.ordemExecucao.trim()}
+                      </p>
+                    )}
+
+                    <div className="space-y-3.5 text-sm text-justify">
+                      {(() => {
+                        const layouts = progressiveLayout || [];
+                        let nextPrimarySec = 1;
+                        let nextFlatNum = 1;
+                        let hasSections = false;
+
+                        return (
+                          <>
+                            {doc.artigos.map((art, aIdx) => {
+                              const layout = layouts[aIdx];
+                              if (layout) {
+                                nextPrimarySec = layout.nextPrimarySectionNum;
+                                nextFlatNum = layout.nextFlatItemNum;
+                                hasSections = layout.hasSections;
+                              }
+                              const itemLabel = layout
+                                ? layout.itemLabel
+                                : `${aIdx + 1}.`;
+                              const hasInc = art.incisos.length > 0;
+                              const leadCaput =
+                                art.caput.length - art.caput.trimStart().length;
+                              let caput = art.caput.trim();
+                              if (hasInc && !caput.endsWith(':')) {
+                                caput = `${caput.replace(/[.;]+$/, '')}:`;
+                              } else if (
+                                !hasInc &&
+                                caput &&
+                                !/[.!?]$/.test(caput)
+                              ) {
+                                caput = `${caput}.`;
+                              }
+
+                              return (
+                                <div key={art.id} className="space-y-2">
+                                  {layout?.headings.map((heading) => (
+                                    <div
+                                      key={heading.fieldKey}
+                                      className={
+                                        heading.kind === 'titulo'
+                                          ? 'font-bold text-sm uppercase text-slate-900 pt-3 pb-0.5 border-b border-slate-200'
+                                          : heading.kind === 'capitulo'
+                                            ? 'font-bold text-xs uppercase text-slate-800 pt-2'
+                                            : 'font-semibold text-xs text-slate-800 pt-1'
+                                      }
+                                    >
+                                      <HighlightedLegalText
+                                        displayText={heading.formattedText}
+                                        baseOffset={heading.baseOffset}
+                                        findings={
+                                          previewFindingsByField[
+                                            heading.fieldKey
+                                          ] || []
+                                        }
+                                        enabled={highlightReview}
+                                        selectedFindingId={selectedFindingId}
+                                        onSelectFinding={(f) =>
+                                          setSelectedFindingId(f.id)
+                                        }
+                                      />
+                                    </div>
+                                  ))}
+
+                                  <p className="whitespace-pre-line">
+                                    <span className="font-semibold">
+                                      {itemLabel}
+                                    </span>{' '}
+                                    <HighlightedLegalText
+                                      displayText={caput}
+                                      baseOffset={leadCaput}
+                                      findings={
+                                        previewFindingsByField[
+                                          `caput:${art.id}`
+                                        ] || []
+                                      }
+                                      enabled={highlightReview}
+                                      selectedFindingId={selectedFindingId}
+                                      onSelectFinding={(f) =>
+                                        setSelectedFindingId(f.id)
+                                      }
+                                    />
+                                  </p>
+
+                                  {art.incisos.map((inc, iIdx) => {
+                                    const isLastInc =
+                                      iIdx === art.incisos.length - 1;
+                                    const hasAl = inc.alineas.length > 0;
+                                    const leadInc =
+                                      inc.texto.length -
+                                      inc.texto.trimStart().length;
+                                    let txt = inc.texto.trim();
+                                    if (hasAl)
+                                      txt = `${txt.replace(/[.;:]+$/, '')}:`;
+                                    else if (isLastInc)
+                                      txt = `${txt.replace(/[.;:]+$/, '')}.`;
+                                    else txt = `${txt.replace(/[.;:]+$/, '')};`;
+
+                                    return (
+                                      <div key={inc.id} className="space-y-1">
+                                        <p className="pl-6 whitespace-pre-line">
+                                          {toLetter(iIdx)}){' '}
+                                          <HighlightedLegalText
+                                            displayText={txt}
+                                            baseOffset={leadInc}
+                                            findings={
+                                              previewFindingsByField[
+                                                `inciso:${art.id}:${inc.id}`
+                                              ] || []
+                                            }
+                                            enabled={highlightReview}
+                                            selectedFindingId={
+                                              selectedFindingId
+                                            }
+                                            onSelectFinding={(f) =>
+                                              setSelectedFindingId(f.id)
+                                            }
+                                          />
+                                        </p>
+                                        {inc.alineas.map((al, alIdx) => {
+                                          const isLastAl =
+                                            alIdx === inc.alineas.length - 1;
+                                          const alSep =
+                                            isLastAl && isLastInc ? '.' : ';';
+                                          const leadAl =
+                                            al.texto.length -
+                                            al.texto.trimStart().length;
+                                          const dispAl = `${al.texto
+                                            .trim()
+                                            .replace(/[.;:]+$/, '')}${alSep}`;
+                                          return (
+                                            <p
+                                              key={al.id}
+                                              className="pl-12 whitespace-pre-line"
+                                            >
+                                              •{' '}
+                                              <HighlightedLegalText
+                                                displayText={dispAl}
+                                                baseOffset={leadAl}
+                                                findings={
+                                                  previewFindingsByField[
+                                                    `alinea:${art.id}:${inc.id}:${al.id}`
+                                                  ] || []
+                                                }
+                                                enabled={highlightReview}
+                                                selectedFindingId={
+                                                  selectedFindingId
+                                                }
+                                                onSelectFinding={(f) =>
+                                                  setSelectedFindingId(f.id)
+                                                }
+                                              />
+                                            </p>
+                                          );
+                                        })}
+                                      </div>
+                                    );
+                                  })}
+
+                                  {art.paragrafos.map((par, pIdx) => {
+                                    const subLabel =
+                                      layout?.subItemLabels[pIdx] ||
+                                      `${itemLabel.replace(/\.$/, '')}.${pIdx + 1}`;
+                                    const parIncisos = par.incisos || [];
+                                    const leadPar =
+                                      par.texto.length -
+                                      par.texto.trimStart().length;
+                                    let pTxt = par.texto.trim();
+                                    if (
+                                      parIncisos.length > 0 &&
+                                      !pTxt.endsWith(':')
+                                    ) {
+                                      pTxt = `${pTxt.replace(/[.;]+$/, '')}:`;
+                                    } else if (
+                                      parIncisos.length === 0 &&
+                                      pTxt &&
+                                      !/[.!?]$/.test(pTxt)
+                                    ) {
+                                      pTxt = `${pTxt}.`;
+                                    }
+
+                                    return (
+                                      <div key={par.id} className="space-y-1.5">
+                                        <p className="whitespace-pre-line">
+                                          <span className="font-semibold">
+                                            {subLabel}
+                                          </span>{' '}
+                                          <HighlightedLegalText
+                                            displayText={pTxt}
+                                            baseOffset={leadPar}
+                                            findings={
+                                              previewFindingsByField[
+                                                `paragrafo:${art.id}:${par.id}`
+                                              ] || []
+                                            }
+                                            enabled={highlightReview}
+                                            selectedFindingId={
+                                              selectedFindingId
+                                            }
+                                            onSelectFinding={(f) =>
+                                              setSelectedFindingId(f.id)
+                                            }
+                                          />
+                                        </p>
+
+                                        {parIncisos.map((inc, iIdx) => {
+                                          const isLastInc =
+                                            iIdx === parIncisos.length - 1;
+                                          const hasAl = inc.alineas.length > 0;
+                                          const leadInc =
+                                            inc.texto.length -
+                                            inc.texto.trimStart().length;
+                                          let txt = inc.texto.trim();
+                                          if (hasAl)
+                                            txt = `${txt.replace(/[.;:]+$/, '')}:`;
+                                          else if (isLastInc)
+                                            txt = `${txt.replace(/[.;:]+$/, '')}.`;
+                                          else
+                                            txt = `${txt.replace(/[.;:]+$/, '')};`;
+
+                                          return (
+                                            <div
+                                              key={inc.id}
+                                              className="space-y-1"
+                                            >
+                                              <p className="pl-6 whitespace-pre-line">
+                                                {toLetter(iIdx)}){' '}
+                                                <HighlightedLegalText
+                                                  displayText={txt}
+                                                  baseOffset={leadInc}
+                                                  findings={
+                                                    previewFindingsByField[
+                                                      `par_inciso:${art.id}:${par.id}:${inc.id}`
+                                                    ] || []
+                                                  }
+                                                  enabled={highlightReview}
+                                                  selectedFindingId={
+                                                    selectedFindingId
+                                                  }
+                                                  onSelectFinding={(f) =>
+                                                    setSelectedFindingId(f.id)
+                                                  }
+                                                />
+                                              </p>
+                                              {inc.alineas.map((al, alIdx) => {
+                                                const isLastAl =
+                                                  alIdx ===
+                                                  inc.alineas.length - 1;
+                                                const alSep =
+                                                  isLastAl && isLastInc
+                                                    ? '.'
+                                                    : ';';
+                                                const leadAl =
+                                                  al.texto.length -
+                                                  al.texto.trimStart().length;
+                                                const dispAl = `${al.texto
+                                                  .trim()
+                                                  .replace(/[.;:]+$/, '')}${alSep}`;
+                                                return (
+                                                  <p
+                                                    key={al.id}
+                                                    className="pl-12 whitespace-pre-line"
+                                                  >
+                                                    •{' '}
+                                                    <HighlightedLegalText
+                                                      displayText={dispAl}
+                                                      baseOffset={leadAl}
+                                                      findings={
+                                                        previewFindingsByField[
+                                                          `par_alinea:${art.id}:${par.id}:${inc.id}:${al.id}`
+                                                        ] || []
+                                                      }
+                                                      enabled={highlightReview}
+                                                      selectedFindingId={
+                                                        selectedFindingId
+                                                      }
+                                                      onSelectFinding={(f) =>
+                                                        setSelectedFindingId(
+                                                          f.id
+                                                        )
+                                                      }
+                                                    />
+                                                  </p>
+                                                );
+                                              })}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    );
+                                  })}
+
+                                  {(doc.imagens || [])
+                                    .filter(
+                                      (img) =>
+                                        img.posicao === 'pos_artigo' &&
+                                        img.artigoId === art.id
+                                    )
+                                    .map((img) => (
+                                      <NormaImagemPreviewBlock
+                                        key={img.id}
+                                        img={img}
+                                      />
+                                    ))}
+                                </div>
+                              );
+                            })}
+
+                            {(() => {
+                              const revEntries = doc.revogacoes
+                                .map((raw, idx) => ({
+                                  raw,
+                                  trimmed: raw.trim(),
+                                  lead: raw.length - raw.trimStart().length,
+                                  idx,
+                                }))
+                                .filter((item) => item.trimmed.length > 0);
+                              let curPrimary = nextPrimarySec;
+                              let curFlat = nextFlatNum;
+                              const blocks: React.ReactNode[] = [];
+
+                              if (revEntries.length > 0) {
+                                const secPrefix = hasSections
+                                  ? `${curPrimary}.1`
+                                  : `${curFlat}.`;
+                                blocks.push(
+                                  <div key="tech-rev" className="space-y-1.5 pt-2">
+                                    {hasSections && (
+                                      <div className="font-bold text-sm uppercase text-slate-900 border-b border-slate-200 pb-0.5">
+                                        {curPrimary}. DISPOSIÇÕES SUBSTITUÍDAS
+                                      </div>
+                                    )}
+                                    {revEntries.length === 1 ? (
+                                      <p>
+                                        <span className="font-semibold">
+                                          {secPrefix}
+                                        </span>{' '}
+                                        Fica substituído/revogado o documento{' '}
+                                        <HighlightedLegalText
+                                          displayText={`${revEntries[0].trimmed.replace(/\.$/, '')}.`}
+                                          baseOffset={revEntries[0].lead}
+                                          findings={
+                                            previewFindingsByField[
+                                              `revogacao:${revEntries[0].idx}`
+                                            ] || []
+                                          }
+                                          enabled={highlightReview}
+                                          selectedFindingId={selectedFindingId}
+                                          onSelectFinding={(f) =>
+                                            setSelectedFindingId(f.id)
+                                          }
+                                        />
+                                      </p>
+                                    ) : (
+                                      <>
+                                        <p>
+                                          <span className="font-semibold">
+                                            {secPrefix}
+                                          </span>{' '}
+                                          Ficam substituídos ou revogados:
+                                        </p>
+                                        {revEntries.map((item, rPos) => (
+                                          <p key={item.idx} className="pl-6">
+                                            {toLetter(rPos)}){' '}
+                                            <HighlightedLegalText
+                                              displayText={`${item.trimmed.replace(/[.;]+$/, '')}${
+                                                rPos === revEntries.length - 1
+                                                  ? '.'
+                                                  : ';'
+                                              }`}
+                                              baseOffset={item.lead}
+                                              findings={
+                                                previewFindingsByField[
+                                                  `revogacao:${item.idx}`
+                                                ] || []
+                                              }
+                                              enabled={highlightReview}
+                                              selectedFindingId={
+                                                selectedFindingId
+                                              }
+                                              onSelectFinding={(f) =>
+                                                setSelectedFindingId(f.id)
+                                              }
+                                            />
+                                          </p>
+                                        ))}
+                                      </>
+                                    )}
+                                  </div>
+                                );
+                                if (hasSections) curPrimary += 1;
+                                else curFlat += 1;
+                              }
+
+                              blocks.push(
+                                <div key="tech-vig" className="space-y-1.5 pt-2">
+                                  {hasSections && (
+                                    <div className="font-bold text-sm uppercase text-slate-900 border-b border-slate-200 pb-0.5">
+                                      {curPrimary}. VIGÊNCIA E CONTROLE DE REVISÃO
+                                    </div>
+                                  )}
+                                  <p>
+                                    <span className="font-semibold">
+                                      {hasSections
+                                        ? `${curPrimary}.1`
+                                        : `${curFlat}.`}
+                                    </span>{' '}
+                                    {renderVigenciaClause(doc)}
+                                  </p>
+                                </div>
+                              );
+
+                              return blocks;
+                            })()}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </>
+                ) : (
+                  <>
                 <div className="text-center font-bold tracking-wide text-sm uppercase mb-6">
-                  {doc.tipo.toUpperCase()} Nº {doc.numero.trim() || '___'},{' '}
-                  {(doc.data || 'DE ___ DE __________ DE _____').toUpperCase()}
+                  {formatNormaEpigrafe(doc)}
                 </div>
 
                 {doc.ementa.trim() && (
-                  <p className="text-sm leading-relaxed ml-auto w-full sm:w-3/5 text-justify mb-6">
+                  <p
+                    className={
+                      isWideEmenta
+                        ? 'text-sm leading-relaxed text-center italic border-y border-slate-300 py-3 px-4 mb-6'
+                        : 'text-sm leading-relaxed ml-auto w-full sm:w-3/5 text-justify mb-6'
+                    }
+                  >
                     <HighlightedLegalText
                       displayText={doc.ementa.trim()}
                       baseOffset={
@@ -3715,29 +4831,23 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                   </p>
                 )}
 
-                {/* Preâmbulo preservando múltiplos CONSIDERANDOs / parágrafos */}
+                {/* Preâmbulo preservando múltiplos CONSIDERANDOs / parágrafos e sanção legislativa */}
                 <div className="space-y-3 text-sm text-justify mb-6">
                   {(() => {
-                    const ordem =
-                      doc.ordemExecucao.trim() ||
-                      getOrdemExecucaoPadrao(doc.tipo);
+                    const pre = formatPreambuloParts(doc);
                     const fundFindings =
                       previewFindingsByField['fundamentoLegal'] || [];
                     const autFindings =
                       previewFindingsByField['autoridade'] || [];
                     const autTrimLead =
                       doc.autoridade.length - doc.autoridade.trimStart().length;
-                    if (fundamentoSpans.length <= 1) {
-                      const span = fundamentoSpans[0] || {
-                        text: '',
-                        offset: 0,
-                      };
-                      const needsComma = span.text && !/[,:;]$/.test(span.text);
+
+                    if (fundamentoSpans.length === 0) {
                       return (
                         <p className="indent-8">
                           <span className="font-semibold">
                             <HighlightedLegalText
-                              displayText={doc.autoridade.trim()}
+                              displayText={pre.autoridade}
                               baseOffset={autTrimLead}
                               findings={autFindings}
                               enabled={highlightReview}
@@ -3747,7 +4857,29 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                               }
                             />
                           </span>
-                          ,{' '}
+                          {pre.separadorAutoridade}
+                          <span className="font-semibold">{pre.ordem}</span>
+                        </p>
+                      );
+                    }
+
+                    if (fundamentoSpans.length === 1) {
+                      const span = fundamentoSpans[0];
+                      return (
+                        <p className="indent-8">
+                          <span className="font-semibold">
+                            <HighlightedLegalText
+                              displayText={pre.autoridade}
+                              baseOffset={autTrimLead}
+                              findings={autFindings}
+                              enabled={highlightReview}
+                              selectedFindingId={selectedFindingId}
+                              onSelectFinding={(f) =>
+                                setSelectedFindingId(f.id)
+                              }
+                            />
+                          </span>
+                          {pre.separadorAutoridade}
                           <HighlightedLegalText
                             displayText={span.text}
                             baseOffset={span.offset}
@@ -3756,27 +4888,27 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                             selectedFindingId={selectedFindingId}
                             onSelectFinding={(f) => setSelectedFindingId(f.id)}
                           />
-                          {needsComma ? ',' : ''}{' '}
-                          <span className="font-semibold">{ordem}</span>
+                          {pre.ordem && (
+                            <>
+                              {pre.needsCommaBeforeOrdem ? ',' : ''}{' '}
+                              <span className="font-semibold">{pre.ordem}</span>
+                            </>
+                          )}
                         </p>
                       );
                     }
+
                     const lastIdx = fundamentoSpans.length - 1;
                     return fundamentoSpans.map((span, lIdx) => {
                       const isFirst = lIdx === 0;
                       const isLast = lIdx === lastIdx;
-                      const hasOrdemInside =
-                        /(DECRETA:|RESOLVE:|ESTABELECE:|PROMULGA:)\s*$/i.test(
-                          span.text
-                        );
-                      const needsComma = !/[,:;]$/.test(span.text);
                       return (
                         <p key={lIdx} className="indent-8">
-                          {isFirst && (
+                          {isFirst && pre.autoridade && (
                             <>
                               <span className="font-semibold">
                                 <HighlightedLegalText
-                                  displayText={doc.autoridade.trim()}
+                                  displayText={pre.autoridade}
                                   baseOffset={autTrimLead}
                                   findings={autFindings}
                                   enabled={highlightReview}
@@ -3786,7 +4918,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                                   }
                                 />
                               </span>
-                              ,{' '}
+                              {pre.separadorAutoridade}
                             </>
                           )}
                           <HighlightedLegalText
@@ -3797,10 +4929,10 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                             selectedFindingId={selectedFindingId}
                             onSelectFinding={(f) => setSelectedFindingId(f.id)}
                           />
-                          {isLast && !hasOrdemInside && (
+                          {isLast && pre.ordem && (
                             <>
-                              {needsComma ? ',' : ''}{' '}
-                              <span className="font-semibold">{ordem}</span>
+                              {pre.needsCommaBeforeOrdem ? ',' : ''}{' '}
+                              <span className="font-semibold">{pre.ordem}</span>
                             </>
                           )}
                         </p>
@@ -4234,21 +5366,15 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                           (doc.revogacoes.some((r) => r.trim()) ? 2 : 1)
                       )}
                     </span>{' '}
-                    {(() => {
-                      const lines = plainText.split('\n');
-                      const vigLine = lines.find((l) =>
-                        /entra em vigor/i.test(l)
-                      );
-                      return vigLine
-                        ? vigLine.replace(/^Art\.\s*\d+º?\s*/, '')
-                        : 'Este ato entra em vigor na data de sua publicação.';
-                    })()}
+                    {renderVigenciaClause(doc)}
                   </p>
                 </div>
+                  </>
+                )}
 
                 <div className="mt-10 space-y-6 text-sm">
                   {doc.localAssinatura.trim() && (
-                    <p className="indent-8">
+                    <p className={isTech ? '' : 'indent-8'}>
                       <HighlightedLegalText
                         displayText={doc.localAssinatura.trim()}
                         baseOffset={

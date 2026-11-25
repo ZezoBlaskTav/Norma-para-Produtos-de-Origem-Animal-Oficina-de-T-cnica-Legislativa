@@ -87,15 +87,16 @@ export const GuiaOrientacaoView: React.FC<GuiaOrientacaoViewProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           <div className="lg:col-span-8 space-y-3">
             <p className="text-xs font-medium text-slate-500">
-              Técnica Legislativa · Lei Complementar nº 95/1998 · Decreto nº 12.002/2024
+              Técnica Legislativa e Normativa · LC nº 95/1998 · Decreto nº 12.002/2024 · ABNT NBR 6024
             </p>
             <h1 className="text-2xl lg:text-3xl font-semibold tracking-tight text-slate-900">
-              Como criar, revisar e ajustar decretos e normas com segurança jurídica
+              Como criar, revisar e ajustar leis, decretos, regimentos e normas técnicas
             </h1>
             <p className="text-sm lg:text-base text-slate-600 leading-relaxed max-w-3xl">
-              Consulte o roteiro prático, o glossário jurídico de termos legislativos e
-              o checklist de análise de impacto (social, econômico, ambiental e legal),
-              ou carregue o modelo estruturado de decreto direto no editor.
+              Consulte o roteiro prático, o glossário jurídico e o checklist de análise
+              de impacto, ou abra no editor modelos prontos de Lei, Decreto, Regimento
+              Interno, Instrução de Trabalho (IT) e Procedimento Operacional Padrão (POP),
+              cada um com sua formatação oficial.
             </p>
           </div>
 
