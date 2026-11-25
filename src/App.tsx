@@ -12,6 +12,8 @@ import {
   FolderOpen,
   HardDrive,
   Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
   Save,
   Scale,
   ShieldCheck,
@@ -200,6 +202,24 @@ const TAB_INFO: Record<
 export function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('guia');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('norma_sidebar_collapsed_v1') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('norma_sidebar_collapsed_v1', next ? '1' : '0');
+      } catch {
+        // Ignora erro de armazenamento local
+      }
+      return next;
+    });
+  }, []);
   const [exportStatus, setExportStatus] = useState<
     'idle' | 'pdf' | 'docx' | 'erro'
   >('idle');
@@ -1755,16 +1775,55 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex">
-      {/* Sidebar Desktop (260px) */}
-      <aside className="hidden lg:flex lg:w-[260px] lg:flex-col lg:fixed lg:inset-y-0 bg-white border-r border-slate-200 z-30">
-        <div className="h-16 px-6 flex items-center gap-2.5 border-b border-slate-200 shrink-0">
-          <Scale className="w-5 h-5 text-slate-900 shrink-0" />
-          <span className="text-base font-bold tracking-tight text-slate-900 whitespace-nowrap">
-            Norma
-          </span>
+      {/* Sidebar Desktop (260px expandida / 72px recolhida) */}
+      <aside
+        className={`hidden lg:flex lg:flex-col lg:fixed lg:inset-y-0 bg-white border-r border-slate-200 z-30 transition-[width] duration-200 ease-out ${
+          sidebarCollapsed ? 'lg:w-[72px]' : 'lg:w-[260px]'
+        }`}
+      >
+        <div
+          className={`h-16 flex items-center border-b border-slate-200 shrink-0 ${
+            sidebarCollapsed ? 'px-3 justify-center' : 'px-5 justify-between'
+          }`}
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <Scale className="w-5 h-5 text-slate-900 shrink-0" />
+            {!sidebarCollapsed && (
+              <span className="text-base font-bold tracking-tight text-slate-900 whitespace-nowrap">
+                Norma
+              </span>
+            )}
+          </div>
+          {!sidebarCollapsed && (
+            <button
+              type="button"
+              onClick={toggleSidebarCollapsed}
+              title="Recolher barra lateral para ampliar área de edição"
+              aria-label="Recolher barra lateral"
+              className="p-1.5 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors shrink-0"
+            >
+              <PanelLeftClose className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
-        <div className="flex-1 overflow-y-auto px-3 py-5 space-y-6">
+        <div
+          className={`flex-1 overflow-y-auto custom-scrollbar py-4 space-y-5 ${
+            sidebarCollapsed ? 'px-2' : 'px-3'
+          }`}
+        >
+          {sidebarCollapsed && (
+            <button
+              type="button"
+              onClick={toggleSidebarCollapsed}
+              title="Expandir barra lateral"
+              aria-label="Expandir barra lateral"
+              className="w-full flex items-center justify-center p-2.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors"
+            >
+              <PanelLeftOpen className="w-4 h-4" />
+            </button>
+          )}
+
           <nav aria-label="Menu principal" className="space-y-1">
             {visibleTabs.map((key) => {
               const item = TAB_INFO[key];
@@ -1775,195 +1834,275 @@ export function App() {
                   key={key}
                   type="button"
                   onClick={() => handleNavigate(key)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-md transition-colors text-left whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 ${
+                  title={sidebarCollapsed ? item.label : undefined}
+                  aria-label={item.label}
+                  className={`relative w-full flex items-center ${
+                    sidebarCollapsed
+                      ? 'justify-center px-2 py-2.5'
+                      : 'gap-3 px-3 py-2.5'
+                  } text-sm font-medium rounded-md transition-colors text-left whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 ${
                     isActive
                       ? 'bg-slate-900 text-white'
                       : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
                   }`}
                 >
                   <Icon className="w-4 h-4 shrink-0" />
-                  <span className="truncate flex-1">{item.label}</span>
-                  {key === 'acesso' && pendingUsersCount > 0 && (
-                    <span
-                      className={`px-1.5 py-0.5 text-[11px] font-semibold rounded tabular-nums ${
-                        isActive
-                          ? 'bg-white text-slate-900'
-                          : 'bg-amber-100 text-amber-900'
-                      }`}
-                    >
-                      {pendingUsersCount}
-                    </span>
+                  {!sidebarCollapsed && (
+                    <span className="truncate flex-1">{item.label}</span>
                   )}
+                  {key === 'acesso' &&
+                    pendingUsersCount > 0 &&
+                    (sidebarCollapsed ? (
+                      <span
+                        className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-500"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <span
+                        className={`px-1.5 py-0.5 text-[11px] font-semibold rounded tabular-nums ${
+                          isActive
+                            ? 'bg-white text-slate-900'
+                            : 'bg-amber-100 text-amber-900'
+                        }`}
+                      >
+                        {pendingUsersCount}
+                      </span>
+                    ))}
                 </button>
               );
             })}
           </nav>
 
-          {/* Resumo da Minuta em Edição + Botão Salvar + Acesso aos Decretos Salvos */}
-          <div className="px-3 pt-5 border-t border-slate-200 space-y-3">
-            <div className="text-xs font-semibold text-slate-500">
-              {isAjusteAtivo ? 'Ato alterador ativo' : 'Minuta ativa no editor'}
-            </div>
-            <div className="space-y-1 text-xs">
-              <div className="font-medium text-slate-900 truncate">
-                {activeExportTitle}
-              </div>
-              <div className="text-slate-500 line-clamp-2 leading-relaxed">
-                {isAjusteAtivo
-                  ? `Altera ${altMeta.normaAlvoNome}`
-                  : doc.ementa || 'Sem ementa definida'}
-              </div>
-              <div className="pt-1 text-slate-600 font-mono tabular-nums">
-                {isAjusteAtivo
-                  ? `${alteracoes.length} ${
-                      alteracoes.length === 1
-                        ? 'dispositivo ajustado'
-                        : 'dispositivos ajustados'
-                    }`
-                  : `${doc.artigos.length} ${
-                      doc.artigos.length === 1 ? 'artigo' : 'artigos'
-                    }`}
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => void handleSaveNormaNow()}
-              disabled={cloudSyncStatus === 'saving'}
-              className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 rounded-md transition-colors whitespace-nowrap"
-            >
-              {sidebarSavedFeedback ? (
-                <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              ) : (
-                <Save className="w-3.5 h-3.5 shrink-0" />
-              )}
-              <span>
-                {cloudSyncStatus === 'saving'
-                  ? 'Salvando...'
-                  : sidebarSavedFeedback
-                    ? 'Minuta salva'
-                    : 'Salvar minuta atual'}
-              </span>
-            </button>
-
-            <div className="pt-2 space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold text-slate-600 tabular-nums">
-                  Minutas salvas ({cloudNormas.length})
-                </span>
-                <button
-                  type="button"
-                  onClick={() => handleNavigate('conta')}
-                  className="text-[11px] font-medium text-slate-500 hover:text-slate-900 underline"
-                >
-                  Gerenciar
-                </button>
-              </div>
-              {cloudNormas.length === 0 ? (
-                <p className="text-[11px] text-slate-500 leading-relaxed">
-                  Clique em “Salvar minuta atual” para listar seus documentos aqui.
-                </p>
-              ) : (
-                <div className="space-y-1 max-h-40 overflow-y-auto pr-0.5">
-                  {cloudNormas.map((item) => {
-                    const isCurrent = item.id === activeCloudNormaId;
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        onClick={() => handleSelectCloudNorma(item)}
-                        className={`w-full text-left px-2.5 py-2 rounded-md border text-xs transition-colors flex items-start gap-2 ${
-                          isCurrent
-                            ? 'bg-slate-100 border-slate-300 text-slate-900 font-medium'
-                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-                        }`}
-                      >
-                        <FolderOpen className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-500" />
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate">{item.titulo}</div>
-                          <div className="text-[11px] text-slate-500 tabular-nums">
-                            {item.doc.artigos.length}{' '}
-                            {item.doc.artigos.length === 1 ? 'dispositivo' : 'dispositivos'}
-                            {isCurrent ? ' · Em edição' : ''}
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Exportação Oficial PDF e DOCX */}
-          <div className="px-3 pt-5 border-t border-slate-200 space-y-2.5">
-            <div className="text-xs font-semibold text-slate-500">
-              Exportar norma atual
-            </div>
-            <p className="text-xs text-slate-500 leading-relaxed">
-              Padrão A4 adaptado à espécie (LC nº 95/98, Regimento ou ABNT NBR 6024).
-            </p>
-            <div className="space-y-2 pt-0.5">
+          {sidebarCollapsed ? (
+            <div className="pt-3 border-t border-slate-200 space-y-1.5">
+              <button
+                type="button"
+                onClick={() => void handleSaveNormaNow()}
+                disabled={cloudSyncStatus === 'saving'}
+                title="Salvar minuta atual"
+                aria-label="Salvar minuta atual"
+                className="w-full flex items-center justify-center p-2.5 text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 rounded-md transition-colors"
+              >
+                {sidebarSavedFeedback ? (
+                  <Check className="w-4 h-4 text-emerald-400" />
+                ) : (
+                  <Save className="w-4 h-4" />
+                )}
+              </button>
               <button
                 type="button"
                 onClick={handleExportPdf}
                 disabled={exportBusy}
-                className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 rounded-md transition-colors whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900"
+                title="Exportar PDF"
+                aria-label="Exportar PDF"
+                className="w-full flex items-center justify-center p-2.5 text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-60 rounded-md transition-colors"
               >
                 {exportStatus === 'pdf' ? (
-                  <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <Check className="w-4 h-4 text-emerald-600" />
                 ) : (
-                  <FileDown className="w-3.5 h-3.5 shrink-0" />
+                  <FileDown className="w-4 h-4" />
                 )}
-                <span>{exportStatus === 'pdf' ? 'PDF gerado' : 'Exportar PDF'}</span>
               </button>
-
               <button
                 type="button"
                 onClick={handleExportDocx}
                 disabled={exportBusy}
-                className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60 rounded-md transition-colors whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900"
+                title="Exportar DOCX"
+                aria-label="Exportar DOCX"
+                className="w-full flex items-center justify-center p-2.5 text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60 rounded-md transition-colors"
               >
                 {exportStatus === 'docx' ? (
-                  <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <Check className="w-4 h-4 text-emerald-600" />
                 ) : (
-                  <FileText className="w-3.5 h-3.5 shrink-0" />
+                  <FileText className="w-4 h-4" />
                 )}
-                <span>
-                  {exportStatus === 'docx' ? 'DOCX gerado' : 'Exportar DOCX'}
-                </span>
               </button>
             </div>
-            {exportStatus === 'erro' && (
-              <p className="text-xs text-red-700">
-                Não foi possível gerar o arquivo. Tente novamente.
-              </p>
-            )}
-          </div>
+          ) : (
+            <>
+              {/* Resumo da Minuta em Edição + Botão Salvar + Acesso aos Decretos Salvos */}
+              <div className="px-3 pt-5 border-t border-slate-200 space-y-3">
+                <div className="text-xs font-semibold text-slate-500">
+                  {isAjusteAtivo ? 'Ato alterador ativo' : 'Minuta ativa no editor'}
+                </div>
+                <div className="space-y-1 text-xs">
+                  <div className="font-medium text-slate-900 truncate">
+                    {activeExportTitle}
+                  </div>
+                  <div className="text-slate-500 line-clamp-2 leading-relaxed">
+                    {isAjusteAtivo
+                      ? `Altera ${altMeta.normaAlvoNome}`
+                      : doc.ementa || 'Sem ementa definida'}
+                  </div>
+                  <div className="pt-1 text-slate-600 font-mono tabular-nums">
+                    {isAjusteAtivo
+                      ? `${alteracoes.length} ${
+                          alteracoes.length === 1
+                            ? 'dispositivo ajustado'
+                            : 'dispositivos ajustados'
+                        }`
+                      : `${doc.artigos.length} ${
+                          doc.artigos.length === 1 ? 'artigo' : 'artigos'
+                        }`}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void handleSaveNormaNow()}
+                  disabled={cloudSyncStatus === 'saving'}
+                  className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 rounded-md transition-colors whitespace-nowrap"
+                >
+                  {sidebarSavedFeedback ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  ) : (
+                    <Save className="w-3.5 h-3.5 shrink-0" />
+                  )}
+                  <span>
+                    {cloudSyncStatus === 'saving'
+                      ? 'Salvando...'
+                      : sidebarSavedFeedback
+                        ? 'Minuta salva'
+                        : 'Salvar minuta atual'}
+                  </span>
+                </button>
+
+                <div className="pt-2 space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-slate-600 tabular-nums">
+                      Minutas salvas ({cloudNormas.length})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleNavigate('conta')}
+                      className="text-[11px] font-medium text-slate-500 hover:text-slate-900 underline"
+                    >
+                      Gerenciar
+                    </button>
+                  </div>
+                  {cloudNormas.length === 0 ? (
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      Clique em “Salvar minuta atual” para listar seus documentos aqui.
+                    </p>
+                  ) : (
+                    <div className="space-y-1 max-h-40 overflow-y-auto custom-scrollbar pr-0.5">
+                      {cloudNormas.map((item) => {
+                        const isCurrent = item.id === activeCloudNormaId;
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => handleSelectCloudNorma(item)}
+                            className={`w-full text-left px-2.5 py-2 rounded-md border text-xs transition-colors flex items-start gap-2 ${
+                              isCurrent
+                                ? 'bg-slate-100 border-slate-300 text-slate-900 font-medium'
+                                : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                            }`}
+                          >
+                            <FolderOpen className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-500" />
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate">{item.titulo}</div>
+                              <div className="text-[11px] text-slate-500 tabular-nums">
+                                {item.doc.artigos.length}{' '}
+                                {item.doc.artigos.length === 1 ? 'dispositivo' : 'dispositivos'}
+                                {isCurrent ? ' · Em edição' : ''}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Exportação Oficial PDF e DOCX */}
+              <div className="px-3 pt-5 border-t border-slate-200 space-y-2.5">
+                <div className="text-xs font-semibold text-slate-500">
+                  Exportar norma atual
+                </div>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  Padrão A4 adaptado à espécie (LC nº 95/98, Regimento ou ABNT NBR 6024).
+                </p>
+                <div className="space-y-2 pt-0.5">
+                  <button
+                    type="button"
+                    onClick={handleExportPdf}
+                    disabled={exportBusy}
+                    className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 rounded-md transition-colors whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900"
+                  >
+                    {exportStatus === 'pdf' ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    ) : (
+                      <FileDown className="w-3.5 h-3.5 shrink-0" />
+                    )}
+                    <span>{exportStatus === 'pdf' ? 'PDF gerado' : 'Exportar PDF'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleExportDocx}
+                    disabled={exportBusy}
+                    className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60 rounded-md transition-colors whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900"
+                  >
+                    {exportStatus === 'docx' ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    ) : (
+                      <FileText className="w-3.5 h-3.5 shrink-0" />
+                    )}
+                    <span>
+                      {exportStatus === 'docx' ? 'DOCX gerado' : 'Exportar DOCX'}
+                    </span>
+                  </button>
+                </div>
+                {exportStatus === 'erro' && (
+                  <p className="text-xs text-red-700">
+                    Não foi possível gerar o arquivo. Tente novamente.
+                  </p>
+                )}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Cartão da Conta do Usuário no Rodapé da Sidebar */}
-        <div className="p-4 border-t border-slate-200 space-y-2">
+        <div
+          className={`border-t border-slate-200 space-y-2 ${
+            sidebarCollapsed ? 'p-2.5' : 'p-4'
+          }`}
+        >
           {userProfile && (
             <button
               type="button"
               onClick={() => handleNavigate('conta')}
-              className="w-full text-left flex items-center gap-2.5 p-2 rounded-md hover:bg-slate-50 transition-colors"
+              title={
+                sidebarCollapsed
+                  ? `${userProfile.nomeCompleto} (${userProfile.orgao || userProfile.email})`
+                  : undefined
+              }
+              aria-label="Abrir minha conta"
+              className={`w-full text-left flex items-center rounded-md hover:bg-slate-50 transition-colors ${
+                sidebarCollapsed ? 'justify-center p-2' : 'gap-2.5 p-2'
+              }`}
             >
               <UserCircle2 className="w-5 h-5 text-slate-700 shrink-0" />
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-semibold text-slate-900 truncate">
-                  {userProfile.nomeCompleto}
+              {!sidebarCollapsed && (
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-semibold text-slate-900 truncate">
+                    {userProfile.nomeCompleto}
+                  </div>
+                  <div className="text-[11px] text-slate-500 truncate">
+                    {userProfile.orgao || userProfile.email}
+                  </div>
                 </div>
-                <div className="text-[11px] text-slate-500 truncate">
-                  {userProfile.orgao || userProfile.email}
-                </div>
-              </div>
+              )}
             </button>
           )}
-          <div className="text-[11px] text-slate-500 leading-relaxed px-1">
-            Referência: LC nº 95/1998 e Decreto nº 12.002/2024.
-          </div>
+          {!sidebarCollapsed && (
+            <div className="text-[11px] text-slate-500 leading-relaxed px-1">
+              Referência: LC nº 95/1998 e Decreto nº 12.002/2024.
+            </div>
+          )}
         </div>
       </aside>
 
@@ -2109,8 +2248,12 @@ export function App() {
       )}
 
       {/* Conteúdo Principal */}
-      <div className="flex-1 lg:pl-[260px] flex flex-col min-w-0">
-        <header className="h-16 bg-white border-b border-slate-200 px-4 sm:px-8 flex items-center justify-between gap-4 sticky top-0 z-20">
+      <div
+        className={`flex-1 flex flex-col min-w-0 transition-[padding] duration-200 ease-out ${
+          sidebarCollapsed ? 'lg:pl-[72px]' : 'lg:pl-[260px]'
+        }`}
+      >
+        <header className="h-14 sm:h-16 bg-white/95 backdrop-blur-xs border-b border-slate-200 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-4 sticky top-0 z-20">
           <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
@@ -2119,6 +2262,27 @@ export function App() {
               className="lg:hidden p-2 -ml-2 text-slate-600 hover:text-slate-900"
             >
               <Menu className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={toggleSidebarCollapsed}
+              title={
+                sidebarCollapsed
+                  ? 'Expandir barra lateral'
+                  : 'Recolher barra lateral para ampliar área de trabalho'
+              }
+              aria-label={
+                sidebarCollapsed
+                  ? 'Expandir barra lateral'
+                  : 'Recolher barra lateral'
+              }
+              className="hidden lg:inline-flex p-1.5 -ml-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors"
+            >
+              {sidebarCollapsed ? (
+                <PanelLeftOpen className="w-4 h-4" />
+              ) : (
+                <PanelLeftClose className="w-4 h-4" />
+              )}
             </button>
             <div className="flex items-center gap-2 text-sm min-w-0">
               <span className="text-slate-500 hidden sm:inline whitespace-nowrap">
@@ -2213,7 +2377,7 @@ export function App() {
           </div>
         </header>
 
-        <main className="flex-1 p-4 sm:p-8 max-w-[1440px] w-full mx-auto">
+        <main className="flex-1 px-4 py-4 sm:px-6 sm:py-6 lg:px-8 max-w-[1680px] w-full mx-auto">
           {activeTab === 'guia' && (
             <GuiaOrientacaoView
               onNavigate={handleNavigate}

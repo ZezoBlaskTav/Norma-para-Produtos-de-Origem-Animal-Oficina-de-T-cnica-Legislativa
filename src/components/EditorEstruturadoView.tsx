@@ -1791,11 +1791,11 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
   const showPreview = layoutMode === 'dividido' || layoutMode === 'previa';
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 lg:space-y-5">
       {/* Barra de Modelos, Salvamento, Acesso a Decretos Salvos e Auditoria */}
-      <div className="no-print bg-white border border-slate-200 rounded-lg px-5 py-3.5 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-2.5">
+      <div className="no-print bg-white border border-slate-200 rounded-xl px-4 sm:px-5 py-3 space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => void handleExplicitSave()}
@@ -2358,19 +2358,19 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
       <div
         className={
           layoutMode === 'dividido'
-            ? 'grid grid-cols-1 xl:grid-cols-12 gap-6 items-start'
-            : 'max-w-4xl mx-auto space-y-6'
+            ? 'grid grid-cols-1 lg:grid-cols-12 gap-5 xl:gap-6 items-start'
+            : 'max-w-5xl mx-auto space-y-5'
         }
       >
         {/* Coluna Esquerda: Edição Estruturada */}
         {showEditor && (
           <div
-            className={`no-print space-y-6 ${
-              layoutMode === 'dividido' ? 'xl:col-span-6' : ''
+            className={`no-print space-y-4 lg:space-y-5 ${
+              layoutMode === 'dividido' ? 'lg:col-span-6' : ''
             }`}
           >
             {/* Barra de Marcação nas Caixas de Edição e Acesso às Observações */}
-            <div className="bg-white border border-slate-200 rounded-lg px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-600">
+            <div className="bg-slate-50/80 border border-slate-200/90 rounded-lg px-3.5 py-2 flex flex-wrap items-center justify-between gap-2.5 text-xs text-slate-600">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="inline-flex items-center gap-1.5 font-medium text-slate-800 whitespace-nowrap">
                   <Highlighter className="w-3.5 h-3.5 text-slate-600 shrink-0" />
@@ -4028,16 +4028,18 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
           </div>
         )}
 
-        {/* Coluna Direita: Folha Oficial em Tempo Real ou Revisor Linguístico */}
+        {/* Coluna Direita: Folha Oficial em Tempo Real, Checklist, Revisor ou Histórico */}
         {showPreview && (
           <div
-            className={`space-y-3 ${
-              layoutMode === 'dividido' ? 'xl:col-span-6 xl:sticky xl:top-6' : ''
+            className={`space-y-3 print-scroll-container ${
+              layoutMode === 'dividido'
+                ? 'lg:col-span-6 lg:sticky lg:top-[5.25rem] lg:max-h-[calc(100vh-6.25rem)] lg:flex lg:flex-col'
+                : ''
             }`}
           >
-            <div className="no-print bg-white border border-slate-200 rounded-lg px-4 py-3 space-y-2.5">
+            <div className="no-print bg-white border border-slate-200 rounded-xl px-4 py-2.5 space-y-2 shrink-0">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="inline-flex items-center p-1 bg-slate-100 rounded-md shrink-0">
+                <div className="inline-flex items-center p-1 bg-slate-100 rounded-md max-w-full overflow-x-auto custom-scrollbar shrink-0">
                   <button
                     type="button"
                     onClick={() => setRightPaneMode('previa')}
@@ -4179,6 +4181,13 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                 )}
             </div>
 
+            <div
+              className={
+                layoutMode === 'dividido'
+                  ? 'lg:flex-1 lg:min-h-0 lg:overflow-y-auto custom-scrollbar lg:pr-1 space-y-3 print-scroll-inner'
+                  : 'space-y-3'
+              }
+            >
             {rightPaneMode === 'previa' && selectedFinding && (
               <div className="no-print bg-white border border-slate-300 rounded-lg p-3.5 space-y-2 shadow-xs">
                 <div className="flex items-start justify-between gap-2">
@@ -4274,7 +4283,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               />
             ) : (
               <article
-                className={`print-sheet bg-white border border-slate-200 rounded-lg p-8 sm:p-12 text-slate-900 leading-relaxed ${
+                className={`print-sheet bg-white border border-slate-200 rounded-xl p-6 sm:p-8 xl:p-10 2xl:p-12 text-slate-900 leading-relaxed ${
                   isTech ? 'font-sans' : 'font-serif'
                 }`}
               >
@@ -5423,6 +5432,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                 })()}
               </article>
             )}
+            </div>
           </div>
         )}
       </div>

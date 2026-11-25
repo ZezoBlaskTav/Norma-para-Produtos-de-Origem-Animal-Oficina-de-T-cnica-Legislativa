@@ -302,9 +302,9 @@ export const AjusteNormaView: React.FC<AjusteNormaViewProps> = ({
         </div>
       </section>
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 xl:gap-6 items-start">
         {/* Coluna Esquerda: Configuração da Alteração */}
-        <div className="no-print xl:col-span-6 space-y-6">
+        <div className="no-print lg:col-span-6 space-y-5">
           {/* Metadados da Norma Alvo e Ato Alterador */}
           <section className="bg-white border border-slate-200 rounded-lg p-5 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
@@ -695,8 +695,8 @@ export const AjusteNormaView: React.FC<AjusteNormaViewProps> = ({
         </div>
 
         {/* Coluna Direita: Minuta do Ato Alterador OU Quadro Comparativo OU Revisor */}
-        <div className="xl:col-span-6 xl:sticky xl:top-6 space-y-3">
-          <div className="no-print flex flex-wrap items-center justify-between gap-2 bg-white border border-slate-200 rounded-lg px-4 py-3">
+        <div className="lg:col-span-6 lg:sticky lg:top-[5.25rem] lg:max-h-[calc(100vh-6.25rem)] lg:flex lg:flex-col space-y-3 print-scroll-container">
+          <div className="no-print flex flex-wrap items-center justify-between gap-2 bg-white border border-slate-200 rounded-xl px-4 py-2.5 shrink-0">
             <span className="text-xs font-semibold text-slate-700">
               {subTab === 'minuta'
                 ? 'Minuta do Ato Alterador (Art. 12 LC 95/98)'
@@ -751,6 +751,7 @@ export const AjusteNormaView: React.FC<AjusteNormaViewProps> = ({
             </div>
           </div>
 
+          <div className="lg:flex-1 lg:min-h-0 lg:overflow-y-auto custom-scrollbar lg:pr-1 space-y-3 print-scroll-inner">
           {subTab === 'revisor' ? (
             <RevisorLinguisticoPanel
               summary={review}
@@ -764,7 +765,7 @@ export const AjusteNormaView: React.FC<AjusteNormaViewProps> = ({
               onLocateField={handleLocateField}
             />
           ) : subTab === 'minuta' ? (
-            <article className="print-sheet bg-white border border-slate-200 rounded-lg p-8 sm:p-10 font-serif text-sm text-slate-900 leading-relaxed whitespace-pre-wrap">
+            <article className="print-sheet bg-white border border-slate-200 rounded-xl p-6 sm:p-8 xl:p-10 font-serif text-sm text-slate-900 leading-relaxed whitespace-pre-wrap">
               {minutaAlteradora}
             </article>
           ) : (
@@ -876,6 +877,7 @@ export const AjusteNormaView: React.FC<AjusteNormaViewProps> = ({
               </div>
             </div>
           )}
+          </div>
         </div>
       </div>
     </div>
