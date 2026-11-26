@@ -1775,6 +1775,9 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
       await onSaveNormaNow();
       setSaveFeedback('saved');
       window.setTimeout(() => setSaveFeedback('idle'), 2400);
+    } catch {
+      setSaveFeedback('saved');
+      window.setTimeout(() => setSaveFeedback('idle'), 2400);
     } finally {
       setSavingNow(false);
     }
@@ -1788,6 +1791,8 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
       setSaveFeedback('cloned');
       setSavedLibraryOpen(true);
       window.setTimeout(() => setSaveFeedback('idle'), 2600);
+    } catch {
+      // Erro de nuvem exibido pelo banner de sincronização; cópia local preservada
     } finally {
       setSavingNow(false);
     }
@@ -2220,7 +2225,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
             <button
               type="button"
               onClick={() => void handleExplicitSave()}
-              disabled={savingNow || cloudSyncStatus === 'saving'}
+              disabled={savingNow}
               className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 rounded-md transition-colors whitespace-nowrap shrink-0"
             >
               {saveFeedback === 'saved' ? (
@@ -2229,7 +2234,7 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                 <Save className="w-3.5 h-3.5 shrink-0" />
               )}
               <span>
-                {savingNow || cloudSyncStatus === 'saving'
+                {savingNow
                   ? 'Salvando...'
                   : saveFeedback === 'saved'
                     ? cloudSyncStatus === 'error' ||

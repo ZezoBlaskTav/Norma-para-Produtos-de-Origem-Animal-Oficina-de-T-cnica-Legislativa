@@ -98,6 +98,7 @@ import {
   updateUserAccess,
   upsertCloudAlteracao,
   upsertCloudNorma,
+  withFirestoreTimeout,
 } from './utils/cloudStorage';
 import {
   ActiveDriveDbLink,
@@ -261,6 +262,7 @@ export function App() {
   >('offline');
   const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
   const [cloudQuotaPaused, setCloudQuotaPaused] = useState(false);
+  const [manualSaving, setManualSaving] = useState(false);
   const [sidebarSavedFeedback, setSidebarSavedFeedback] = useState(false);
   const [normaRevisions, setNormaRevisions] = useState<NormaRevision[]>([]);
   const [revisionsLoading, setRevisionsLoading] = useState(false);
@@ -873,6 +875,23 @@ export function App() {
     },
   });
 
+  // Garante que o indicador visual de sincronização nunca fique preso em 'saving'
+  useEffect(() => {
+    if (cloudSyncStatus !== 'saving') return;
+    const watchdog = window.setTimeout(() => {
+      setCloudSyncStatus((prev) => {
+        if (prev !== 'saving') return prev;
+        setCloudSyncError(
+          'A sincronização com a nuvem demorou mais que o esperado. Suas edições continuam salvas localmente e você pode tentar sincronizar novamente.'
+        );
+        return typeof navigator !== 'undefined' && navigator.onLine === false
+          ? 'offline'
+          : 'error';
+      });
+    }, 18000);
+    return () => window.clearTimeout(watchdog);
+  }, [cloudSyncStatus]);
+
   const handleForceCloudSync = useCallback(async () => {
     if (!isCloudEligible || !googleUser) return;
     cloudQuotaPausedRef.current = false;
@@ -886,21 +905,29 @@ export function App() {
       const altExists =
         knownCloudAltIdsRef.current.has(activeCloudAltId) ||
         cloudAlteracoesRef.current.some((a) => a.id === activeCloudAltId);
-      await upsertCloudNorma(googleUser.uid, activeCloudNormaId, doc, normaExists);
+      await withFirestoreTimeout(
+        upsertCloudNorma(googleUser.uid, activeCloudNormaId, doc, normaExists),
+        15000
+      );
       knownCloudNormaIdsRef.current.add(activeCloudNormaId);
-      await upsertCloudAlteracao(
-        googleUser.uid,
-        activeCloudAltId,
-        altMeta,
-        alteracoes,
-        altExists
+      await withFirestoreTimeout(
+        upsertCloudAlteracao(
+          googleUser.uid,
+          activeCloudAltId,
+          altMeta,
+          alteracoes,
+          altExists
+        ),
+        15000
       );
       knownCloudAltIdsRef.current.add(activeCloudAltId);
       normaAutosave.markSynced(activeCloudNormaId, normaSignature);
       altAutosave.markSynced(activeCloudAltId, altSignature);
       setCloudSyncStatus('synced');
     } catch (err) {
-      setCloudSyncStatus('error');
+      const isOffline =
+        typeof navigator !== 'undefined' && navigator.onLine === false;
+      setCloudSyncStatus(isOffline ? 'offline' : 'error');
       if (isFirestoreQuotaError(err)) {
         cloudQuotaPausedRef.current = true;
         setCloudQuotaPaused(true);
@@ -946,62 +973,76 @@ export function App() {
   );
 
   const handleSaveNormaNow = useCallback(async () => {
-    const nowIso = new Date().toISOString();
-    const updatedDoc: NormaDocument = {
-      ...doc,
-      updatedAt: nowIso,
-    };
+    setManualSaving(true);
     try {
-      localStorage.setItem(STORAGE_KEYS.doc, JSON.stringify(updatedDoc));
-    } catch {
-      // Ignorar erro de quota do localStorage
-    }
-    await saveWorkspaceToIndexedDB({
-      doc: updatedDoc,
-      altMeta,
-      alteracoes,
-      auditText,
-      updatedAt: nowIso,
-    });
-    await pushImmediateLocalSnapshot(updatedDoc);
-
-    if (isCloudEligible && googleUser && !cloudQuotaPausedRef.current) {
-      setCloudSyncStatus('saving');
-      setCloudSyncError(null);
+      const nowIso = new Date().toISOString();
+      const updatedDoc: NormaDocument = {
+        ...doc,
+        updatedAt: nowIso,
+      };
       try {
-        const exists =
-          knownCloudNormaIdsRef.current.has(activeCloudNormaId) ||
-          cloudNormasRef.current.some((n) => n.id === activeCloudNormaId);
-        await upsertCloudNorma(
-          googleUser.uid,
-          activeCloudNormaId,
-          updatedDoc,
-          exists
-        );
-        knownCloudNormaIdsRef.current.add(activeCloudNormaId);
-        normaAutosave.markSynced(activeCloudNormaId, normaSignature);
-        setCloudSyncStatus('synced');
-      } catch (err) {
-        setCloudSyncStatus('error');
-        if (isFirestoreQuotaError(err)) {
-          cloudQuotaPausedRef.current = true;
-          setCloudQuotaPaused(true);
-          normaAutosave.markSynced(activeCloudNormaId, normaSignature);
-        }
-        setCloudSyncError(
-          formatCloudSyncErrorMessage(
-            err,
-            'Falha ao salvar decreto na nuvem.'
-          )
-        );
-        if (!isFirestoreQuotaError(err)) {
-          throw err;
+        localStorage.setItem(STORAGE_KEYS.doc, JSON.stringify(updatedDoc));
+      } catch {
+        // Ignorar erro de quota do localStorage
+      }
+      await saveWorkspaceToIndexedDB({
+        doc: updatedDoc,
+        altMeta,
+        alteracoes,
+        auditText,
+        updatedAt: nowIso,
+      });
+      await pushImmediateLocalSnapshot(updatedDoc);
+
+      if (isCloudEligible && googleUser && !cloudQuotaPausedRef.current) {
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+          setCloudSyncStatus('offline');
+          setCloudSyncError(
+            'Sem conexão com a internet. Suas edições foram salvas localmente e serão enviadas à nuvem ao reconectar.'
+          );
+        } else {
+          setCloudSyncStatus('saving');
+          setCloudSyncError(null);
+          try {
+            const exists =
+              knownCloudNormaIdsRef.current.has(activeCloudNormaId) ||
+              cloudNormasRef.current.some((n) => n.id === activeCloudNormaId);
+            await withFirestoreTimeout(
+              upsertCloudNorma(
+                googleUser.uid,
+                activeCloudNormaId,
+                updatedDoc,
+                exists
+              ),
+              15000
+            );
+            knownCloudNormaIdsRef.current.add(activeCloudNormaId);
+            normaAutosave.markSynced(activeCloudNormaId, normaSignature);
+            setCloudSyncStatus('synced');
+          } catch (err) {
+            const isOffline =
+              typeof navigator !== 'undefined' && navigator.onLine === false;
+            setCloudSyncStatus(isOffline ? 'offline' : 'error');
+            if (isFirestoreQuotaError(err)) {
+              cloudQuotaPausedRef.current = true;
+              setCloudQuotaPaused(true);
+              normaAutosave.markSynced(activeCloudNormaId, normaSignature);
+            }
+            setCloudSyncError(
+              formatCloudSyncErrorMessage(
+                err,
+                'Falha ao salvar minuta na nuvem. Cópia local preservada.'
+              )
+            );
+          }
         }
       }
-    }
 
-    setSidebarSavedFeedback(true);
-    window.setTimeout(() => setSidebarSavedFeedback(false), 2200);
+      setSidebarSavedFeedback(true);
+      window.setTimeout(() => setSidebarSavedFeedback(false), 2200);
+    } finally {
+      setManualSaving(false);
+    }
   }, [
     doc,
     altMeta,
@@ -1016,57 +1057,64 @@ export function App() {
   ]);
 
   const handleSaveAsNewNorma = useCallback(async () => {
-    const nextId = sanitizeFirestoreId(`norma_${Date.now()}`);
-    const nowIso = new Date().toISOString();
-    const clonedDoc: NormaDocument = {
-      ...JSON.parse(JSON.stringify(doc)),
-      id: nextId,
-      updatedAt: nowIso,
-    };
-    const clonedSig = computeWorkspaceSignature(
-      clonedDoc,
-      DEFAULT_ALTERACAO_META,
-      []
-    );
-    await saveWorkspaceToIndexedDB({
-      doc: clonedDoc,
-      altMeta,
-      alteracoes,
-      auditText,
-      updatedAt: nowIso,
-    });
-    await pushImmediateLocalSnapshot(clonedDoc);
+    setManualSaving(true);
+    try {
+      const nextId = sanitizeFirestoreId(`norma_${Date.now()}`);
+      const nowIso = new Date().toISOString();
+      const clonedDoc: NormaDocument = {
+        ...JSON.parse(JSON.stringify(doc)),
+        id: nextId,
+        updatedAt: nowIso,
+      };
+      const clonedSig = computeWorkspaceSignature(
+        clonedDoc,
+        DEFAULT_ALTERACAO_META,
+        []
+      );
+      await saveWorkspaceToIndexedDB({
+        doc: clonedDoc,
+        altMeta,
+        alteracoes,
+        auditText,
+        updatedAt: nowIso,
+      });
+      await pushImmediateLocalSnapshot(clonedDoc);
 
-    if (isCloudEligible && googleUser && !cloudQuotaPausedRef.current) {
-      setCloudSyncStatus('saving');
-      setCloudSyncError(null);
-      try {
-        await upsertCloudNorma(googleUser.uid, nextId, clonedDoc, false);
-        knownCloudNormaIdsRef.current.add(nextId);
-        setCloudSyncStatus('synced');
-      } catch (err) {
-        setCloudSyncStatus('error');
-        if (isFirestoreQuotaError(err)) {
-          cloudQuotaPausedRef.current = true;
-          setCloudQuotaPaused(true);
-        }
-        setCloudSyncError(
-          formatCloudSyncErrorMessage(
-            err,
-            'Falha ao salvar nova cópia na nuvem.'
-          )
-        );
-        if (!isFirestoreQuotaError(err)) {
-          throw err;
+      if (isCloudEligible && googleUser && !cloudQuotaPausedRef.current) {
+        setCloudSyncStatus('saving');
+        setCloudSyncError(null);
+        try {
+          await withFirestoreTimeout(
+            upsertCloudNorma(googleUser.uid, nextId, clonedDoc, false),
+            15000
+          );
+          knownCloudNormaIdsRef.current.add(nextId);
+          setCloudSyncStatus('synced');
+        } catch (err) {
+          const isOffline =
+            typeof navigator !== 'undefined' && navigator.onLine === false;
+          setCloudSyncStatus(isOffline ? 'offline' : 'error');
+          if (isFirestoreQuotaError(err)) {
+            cloudQuotaPausedRef.current = true;
+            setCloudQuotaPaused(true);
+          }
+          setCloudSyncError(
+            formatCloudSyncErrorMessage(
+              err,
+              'Falha ao salvar nova cópia na nuvem. Cópia local preservada.'
+            )
+          );
         }
       }
-    }
 
-    normaAutosave.markSynced(nextId, clonedSig);
-    setActiveCloudNormaId(nextId);
-    setDoc(clonedDoc);
-    setSidebarSavedFeedback(true);
-    window.setTimeout(() => setSidebarSavedFeedback(false), 2200);
+      normaAutosave.markSynced(nextId, clonedSig);
+      setActiveCloudNormaId(nextId);
+      setDoc(clonedDoc);
+      setSidebarSavedFeedback(true);
+      window.setTimeout(() => setSidebarSavedFeedback(false), 2200);
+    } finally {
+      setManualSaving(false);
+    }
   }, [
     doc,
     altMeta,
@@ -1923,7 +1971,7 @@ export function App() {
               <button
                 type="button"
                 onClick={() => void handleSaveNormaNow()}
-                disabled={cloudSyncStatus === 'saving'}
+                disabled={manualSaving}
                 title="Salvar minuta atual"
                 aria-label="Salvar minuta atual"
                 className="w-full flex items-center justify-center p-2.5 text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 rounded-md transition-colors"
@@ -1995,7 +2043,7 @@ export function App() {
                 <button
                   type="button"
                   onClick={() => void handleSaveNormaNow()}
-                  disabled={cloudSyncStatus === 'saving'}
+                  disabled={manualSaving}
                   className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 rounded-md transition-colors whitespace-nowrap"
                 >
                   {sidebarSavedFeedback ? (
@@ -2004,7 +2052,7 @@ export function App() {
                     <Save className="w-3.5 h-3.5 shrink-0" />
                   )}
                   <span>
-                    {cloudSyncStatus === 'saving'
+                    {manualSaving
                       ? 'Salvando...'
                       : sidebarSavedFeedback
                         ? 'Minuta salva'
@@ -2212,7 +2260,7 @@ export function App() {
                 <button
                   type="button"
                   onClick={() => void handleSaveNormaNow()}
-                  disabled={cloudSyncStatus === 'saving'}
+                  disabled={manualSaving}
                   className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 rounded-md whitespace-nowrap"
                 >
                   {sidebarSavedFeedback ? (
@@ -2221,7 +2269,7 @@ export function App() {
                     <Save className="w-3.5 h-3.5 shrink-0" />
                   )}
                   <span>
-                    {cloudSyncStatus === 'saving'
+                    {manualSaving
                       ? 'Salvando...'
                       : sidebarSavedFeedback
                         ? 'Minuta salva'

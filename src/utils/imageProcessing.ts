@@ -2,7 +2,7 @@ import { NormaImagemItem } from '../types/norma';
 
 export const MAX_IMAGES_PER_NORMA = 10;
 export const MAX_SINGLE_IMAGE_CHARS = 220_000;
-export const MAX_TOTAL_IMAGES_CHARS = 800_000;
+export const MAX_TOTAL_IMAGES_CHARS = 680_000;
 
 export const IMAGE_WIDTH_STEPS_MM = [
   25, 35, 45, 55, 70, 85, 100, 120, 140, 155,

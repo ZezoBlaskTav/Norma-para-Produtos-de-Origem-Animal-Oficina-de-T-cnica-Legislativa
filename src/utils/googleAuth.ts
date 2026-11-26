@@ -11,7 +11,12 @@ import {
   updateProfile,
   User,
 } from 'firebase/auth';
-import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
+import {
+  doc,
+  getDocFromServer,
+  getFirestore,
+  initializeFirestore,
+} from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 export const SCOPES = [
@@ -211,10 +216,21 @@ export function formatFirebaseAuthError(error: unknown): AuthErrorInfo {
 export const app =
   getApps().length > 0 ? getApp() : initializeApp(activeFirebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(
-  app,
-  activeFirebaseConfig.firestoreDatabaseId
-);
+
+function initFirestoreClient() {
+  const databaseId = activeFirebaseConfig.firestoreDatabaseId;
+  try {
+    return initializeFirestore(
+      app,
+      { experimentalAutoDetectLongPolling: true },
+      databaseId
+    );
+  } catch {
+    return getFirestore(app, databaseId);
+  }
+}
+
+export const db = initFirestoreClient();
 
 async function testFirestoreConnection(): Promise<void> {
   try {

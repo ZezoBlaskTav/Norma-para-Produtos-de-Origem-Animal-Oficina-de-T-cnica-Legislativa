@@ -41,7 +41,7 @@ export interface FirestoreAutosaveController {
 }
 
 const MAX_AUTO_RETRIES = 6;
-const WRITE_TIMEOUT_MS = 20000;
+const WRITE_TIMEOUT_MS = 14000;
 
 function readPendingDirtyFlag(
   storageKey: string,
@@ -193,6 +193,7 @@ export function useFirestoreAutosave({
   const retryCountRef = useRef<number>(0);
   const inFlightRef = useRef<boolean>(false);
   const queuedDuringFlightRef = useRef<boolean>(false);
+  const isReportingSavingRef = useRef<boolean>(false);
 
   const clearTimers = useCallback(() => {
     if (debounceTimerRef.current !== null) {
@@ -208,11 +209,23 @@ export function useFirestoreAutosave({
   const executeFlush = useCallback(
     async (force = false): Promise<void> => {
       const ctx = latestRef.current;
-      if (!ctx.enabled || ctx.quotaPaused) return;
+      if (!ctx.enabled || ctx.quotaPaused) {
+        if (isReportingSavingRef.current) {
+          isReportingSavingRef.current = false;
+          if (!ctx.quotaPaused && ctx.enabled) {
+            ctx.onSynced();
+          }
+        }
+        return;
+      }
 
       if (!force && lastSyncedSigRef.current === ctx.signature) {
         dirtySinceRef.current = null;
         clearPendingDirtyFlag(ctx.pendingStorageKey);
+        if (isReportingSavingRef.current) {
+          isReportingSavingRef.current = false;
+          ctx.onSynced();
+        }
         return;
       }
 
@@ -222,6 +235,7 @@ export function useFirestoreAutosave({
           ctx.entityKey,
           ctx.signature
         );
+        isReportingSavingRef.current = false;
         ctx.onOffline();
         return;
       }
@@ -237,6 +251,7 @@ export function useFirestoreAutosave({
 
       const attemptEntityKey = ctx.entityKey;
       const attemptSig = ctx.signature;
+      isReportingSavingRef.current = true;
       ctx.onSaving();
 
       let succeeded = false;
@@ -249,6 +264,7 @@ export function useFirestoreAutosave({
           retryCountRef.current = 0;
           lastSyncedSigRef.current = attemptSig;
           clearPendingDirtyFlag(ctx.pendingStorageKey);
+          isReportingSavingRef.current = false;
           ctx.onQuotaExceeded(err);
         } else if (!isBrowserOnline()) {
           writePendingDirtyFlag(
@@ -256,6 +272,7 @@ export function useFirestoreAutosave({
             attemptEntityKey,
             attemptSig
           );
+          isReportingSavingRef.current = false;
           ctx.onOffline();
         } else if (isFirestoreTransientError(err)) {
           writePendingDirtyFlag(
@@ -273,15 +290,18 @@ export function useFirestoreAutosave({
             );
             const jitter = Math.floor(Math.random() * 400);
             const retryDelay = baseDelay + jitter;
+            isReportingSavingRef.current = false;
             ctx.onError(err, true);
             retryTimerRef.current = window.setTimeout(() => {
               retryTimerRef.current = null;
               void executeFlush(false);
             }, retryDelay);
           } else {
+            isReportingSavingRef.current = false;
             ctx.onError(err, false);
           }
         } else {
+          isReportingSavingRef.current = false;
           ctx.onError(err, false);
         }
       } finally {
@@ -315,8 +335,12 @@ export function useFirestoreAutosave({
           } else {
             dirtySinceRef.current = null;
             clearPendingDirtyFlag(afterCtx.pendingStorageKey);
+            isReportingSavingRef.current = false;
             afterCtx.onSynced();
           }
+        } else if (isReportingSavingRef.current) {
+          isReportingSavingRef.current = false;
+          afterCtx.onSynced();
         }
       }
     },
@@ -435,6 +459,7 @@ export function useFirestoreAutosave({
       const ctx = latestRef.current;
       if (!ctx.enabled) return;
       clearTimers();
+      isReportingSavingRef.current = false;
       if (lastSyncedSigRef.current !== ctx.signature) {
         writePendingDirtyFlag(
           ctx.pendingStorageKey,
@@ -520,6 +545,10 @@ export function useFirestoreAutosave({
         retryCountRef.current = 0;
         queuedDuringFlightRef.current = false;
         clearPendingDirtyFlag(latestRef.current.pendingStorageKey);
+        if (isReportingSavingRef.current) {
+          isReportingSavingRef.current = false;
+          latestRef.current.onSynced();
+        }
       }
     },
     [clearTimers]
@@ -534,6 +563,10 @@ export function useFirestoreAutosave({
       retryCountRef.current = 0;
       queuedDuringFlightRef.current = false;
       clearPendingDirtyFlag(latestRef.current.pendingStorageKey);
+      if (isReportingSavingRef.current && !inFlightRef.current) {
+        isReportingSavingRef.current = false;
+        latestRef.current.onSynced();
+      }
     },
     [clearTimers]
   );

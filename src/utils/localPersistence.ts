@@ -76,6 +76,14 @@ function openLocalDb(): Promise<IDBDatabase | null> {
     return Promise.resolve(null);
   }
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (db: IDBDatabase | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve(db);
+    };
+    const timer = window.setTimeout(() => finish(null), 2000);
     try {
       const req = window.indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
@@ -87,10 +95,11 @@ function openLocalDb(): Promise<IDBDatabase | null> {
           db.createObjectStore(STORE_SNAPSHOTS, { keyPath: 'id' });
         }
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
+      req.onsuccess = () => finish(req.result);
+      req.onerror = () => finish(null);
+      req.onblocked = () => finish(null);
     } catch {
-      resolve(null);
+      finish(null);
     }
   });
 }
@@ -102,20 +111,27 @@ export async function saveWorkspaceToIndexedDB(
   if (!db) return;
 
   await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      try {
+        db.close();
+      } catch {
+        // Ignorar
+      }
+      resolve();
+    };
+    const timer = window.setTimeout(finish, 2500);
     try {
       const tx = db.transaction(STORE_WORKSPACE, 'readwrite');
       tx.objectStore(STORE_WORKSPACE).put(state, 'current');
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        resolve();
-      };
+      tx.oncomplete = finish;
+      tx.onerror = finish;
+      tx.onabort = finish;
     } catch {
-      db.close();
-      resolve();
+      finish();
     }
   });
 }
@@ -174,31 +190,40 @@ export async function listLocalRecoverySnapshots(): Promise<
   }
 
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (items: LocalRecoveryPoint[]) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      try {
+        db.close();
+      } catch {
+        // Ignorar
+      }
+      resolve(items);
+    };
+    const timer = window.setTimeout(() => finish(readFallbackSnapshots()), 2500);
     try {
       const tx = db.transaction(STORE_SNAPSHOTS, 'readonly');
       const req = tx.objectStore(STORE_SNAPSHOTS).getAll();
       req.onsuccess = () => {
-        db.close();
         const list = Array.isArray(req.result)
           ? (req.result as LocalRecoveryPoint[])
           : [];
         if (list.length === 0) {
-          resolve(readFallbackSnapshots());
+          finish(readFallbackSnapshots());
           return;
         }
-        resolve(
+        finish(
           list
             .sort((a, b) => b.savedAt.localeCompare(a.savedAt))
             .slice(0, MAX_LOCAL_SNAPSHOTS)
         );
       };
-      req.onerror = () => {
-        db.close();
-        resolve(readFallbackSnapshots());
-      };
+      req.onerror = () => finish(readFallbackSnapshots());
+      tx.onabort = () => finish(readFallbackSnapshots());
     } catch {
-      db.close();
-      resolve(readFallbackSnapshots());
+      finish(readFallbackSnapshots());
     }
   });
 }
@@ -225,6 +250,19 @@ export async function pushLocalRecoverySnapshot(
   }
 
   await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      try {
+        db.close();
+      } catch {
+        // Ignorar
+      }
+      resolve();
+    };
+    const timer = window.setTimeout(finish, 2500);
     try {
       const tx = db.transaction(STORE_SNAPSHOTS, 'readwrite');
       const store = tx.objectStore(STORE_SNAPSHOTS);
@@ -232,17 +270,11 @@ export async function pushLocalRecoverySnapshot(
       for (const item of merged) {
         store.put(item);
       }
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        resolve();
-      };
+      tx.oncomplete = finish;
+      tx.onerror = finish;
+      tx.onabort = finish;
     } catch {
-      db.close();
-      resolve();
+      finish();
     }
   });
 

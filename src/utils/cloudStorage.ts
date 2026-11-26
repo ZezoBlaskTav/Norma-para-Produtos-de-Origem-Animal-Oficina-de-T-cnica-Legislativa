@@ -118,7 +118,9 @@ export function isFirestoreTransientError(error: unknown): boolean {
     lower.includes('missing or insufficient permissions') ||
     lower.includes('permission-denied') ||
     lower.includes('unauthenticated') ||
-    lower.includes('invalid-argument')
+    lower.includes('invalid-argument') ||
+    lower.includes('exceeds the maximum allowed size') ||
+    lower.includes('ultrapassa o limite máximo')
   ) {
     return false;
   }
@@ -137,6 +139,44 @@ export function isFirestoreTransientError(error: unknown): boolean {
     lower.includes('etimedout') ||
     lower.includes('econnreset')
   );
+}
+
+const FIRESTORE_OP_TIMEOUT_MS = 12000;
+const MAX_FIRESTORE_ESTIMATED_BYTES = 950_000;
+
+export function withFirestoreTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs = FIRESTORE_OP_TIMEOUT_MS,
+  message = 'Tempo limite excedido ao aguardar resposta do Firestore (network timeout).'
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = globalThis.setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        globalThis.clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        globalThis.clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+function estimatePayloadJsonBytes(payload: unknown): number {
+  try {
+    const json = JSON.stringify(payload);
+    if (typeof TextEncoder !== 'undefined') {
+      return new TextEncoder().encode(json).length;
+    }
+    return json.length * 2;
+  } catch {
+    return 0;
+  }
 }
 
 export function formatCloudSyncErrorMessage(
@@ -801,10 +841,25 @@ export async function upsertCloudNorma(
     updatedAt: serverTimestamp(),
   };
 
+  const sizeCheckPayload = {
+    ...sharedFields,
+    updatedAt: '',
+  };
+  const estimatedBytes = estimatePayloadJsonBytes(sizeCheckPayload);
+  if (estimatedBytes > MAX_FIRESTORE_ESTIMATED_BYTES) {
+    throw new Error(
+      `O documento atual (~${Math.round(estimatedBytes / 1024)} KB) ultrapassa o limite máximo de 1 MB por registro na nuvem (Firestore). Suas edições continuam salvas localmente neste navegador; para sincronizar na nuvem, reduza ou remova uma imagem anexada ou salve uma cópia no Google Drive.`
+    );
+  }
+
   let shouldUpdate = existsInCloud;
   if (!shouldUpdate) {
     try {
-      const snap = await getDoc(ref);
+      const snap = await withFirestoreTimeout(
+        getDoc(ref),
+        8000,
+        'Tempo limite excedido ao verificar registro na nuvem (network timeout).'
+      );
       shouldUpdate = snap.exists();
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, path);
@@ -814,26 +869,30 @@ export async function upsertCloudNorma(
   try {
     if (shouldUpdate) {
       try {
-        await updateDoc(ref, sharedFields);
+        await withFirestoreTimeout(updateDoc(ref, sharedFields));
       } catch (updateErr) {
         const code = (updateErr as { code?: string } | null)?.code || '';
         if (code === 'not-found') {
-          await setDoc(ref, {
-            ownerId: uid,
-            ...sharedFields,
-            createdAt: serverTimestamp(),
-          });
+          await withFirestoreTimeout(
+            setDoc(ref, {
+              ownerId: uid,
+              ...sharedFields,
+              createdAt: serverTimestamp(),
+            })
+          );
           shouldUpdate = false;
         } else {
           throw updateErr;
         }
       }
     } else {
-      await setDoc(ref, {
-        ownerId: uid,
-        ...sharedFields,
-        createdAt: serverTimestamp(),
-      });
+      await withFirestoreTimeout(
+        setDoc(ref, {
+          ownerId: uid,
+          ...sharedFields,
+          createdAt: serverTimestamp(),
+        })
+      );
     }
     return safeId;
   } catch (error) {
@@ -932,7 +991,11 @@ export async function upsertCloudAlteracao(
   let shouldUpdate = existsInCloud;
   if (!shouldUpdate) {
     try {
-      const snap = await getDoc(ref);
+      const snap = await withFirestoreTimeout(
+        getDoc(ref),
+        8000,
+        'Tempo limite excedido ao verificar ato alterador na nuvem (network timeout).'
+      );
       shouldUpdate = snap.exists();
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, path);
@@ -942,26 +1005,30 @@ export async function upsertCloudAlteracao(
   try {
     if (shouldUpdate) {
       try {
-        await updateDoc(ref, payload);
+        await withFirestoreTimeout(updateDoc(ref, payload));
       } catch (updateErr) {
         const code = (updateErr as { code?: string } | null)?.code || '';
         if (code === 'not-found') {
-          await setDoc(ref, {
-            ownerId: uid,
-            ...payload,
-            createdAt: serverTimestamp(),
-          });
+          await withFirestoreTimeout(
+            setDoc(ref, {
+              ownerId: uid,
+              ...payload,
+              createdAt: serverTimestamp(),
+            })
+          );
           shouldUpdate = false;
         } else {
           throw updateErr;
         }
       }
     } else {
-      await setDoc(ref, {
-        ownerId: uid,
-        ...payload,
-        createdAt: serverTimestamp(),
-      });
+      await withFirestoreTimeout(
+        setDoc(ref, {
+          ownerId: uid,
+          ...payload,
+          createdAt: serverTimestamp(),
+        })
+      );
     }
     return safeId;
   } catch (error) {
