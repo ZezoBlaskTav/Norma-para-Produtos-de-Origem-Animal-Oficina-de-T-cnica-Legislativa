@@ -86,6 +86,7 @@ import {
   isFirestoreQuotaError,
   removeAllowlistEmail,
   sanitizeFirestoreId,
+  saveUserAiPreferences,
   saveUserProfile,
   subscribeAllUsers,
   subscribeAllowlist,
@@ -122,6 +123,7 @@ import {
   updateLocalNormaRevisionNote,
 } from './utils/localPersistence';
 import { summarizeNormaChanges } from './utils/normaDiff';
+import { useFirestoreAutosave } from './hooks/useFirestoreAutosave';
 
 type ActiveTab =
   | 'guia'
@@ -140,6 +142,8 @@ const STORAGE_KEYS = {
   driveSyncMeta: 'norma_studio_drive_sync_meta_v1',
   activeCloudNormaId: 'norma_studio_cloud_norma_id_v1',
   activeCloudAltId: 'norma_studio_cloud_alt_id_v1',
+  pendingNormaCloudSync: 'norma_studio_pending_norma_cloud_v1',
+  pendingAltCloudSync: 'norma_studio_pending_alt_cloud_v1',
 };
 
 interface DriveSyncMeta {
@@ -375,18 +379,24 @@ export function App() {
   );
 
   const lastSnapshotSignatureRef = useRef<string | null>(null);
-  const lastCloudNormaSigRef = useRef<string | null>(null);
-  const lastCloudAltSigRef = useRef<string | null>(null);
   const cloudQuotaPausedRef = useRef<boolean>(false);
   const cloudNormasRef = useRef<CloudNormaItem[]>([]);
   const cloudAlteracoesRef = useRef<CloudAlteracaoItem[]>([]);
+  const knownCloudNormaIdsRef = useRef<Set<string>>(new Set());
+  const knownCloudAltIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     cloudNormasRef.current = cloudNormas;
+    for (const item of cloudNormas) {
+      knownCloudNormaIdsRef.current.add(item.id);
+    }
   }, [cloudNormas]);
 
   useEffect(() => {
     cloudAlteracoesRef.current = cloudAlteracoes;
+    for (const item of cloudAlteracoes) {
+      knownCloudAltIdsRef.current.add(item.id);
+    }
   }, [cloudAlteracoes]);
 
   useEffect(() => {
@@ -426,7 +436,7 @@ export function App() {
     };
   }, []);
 
-  // Persistência imediata em localStorage + redundância em IndexedDB
+  // Persistência imediata em localStorage + redundância rápida em IndexedDB
   useEffect(() => {
     const now = new Date().toISOString();
     try {
@@ -439,7 +449,7 @@ export function App() {
       // Ignore storage quota errors
     }
 
-    const timer = window.setTimeout(() => {
+    const flushIdb = () => {
       void saveWorkspaceToIndexedDB({
         doc,
         altMeta,
@@ -447,9 +457,22 @@ export function App() {
         auditText,
         updatedAt: now,
       });
-    }, 350);
+    };
 
-    return () => window.clearTimeout(timer);
+    const timer = window.setTimeout(flushIdb, 200);
+    const handleFlushOnLeave = () => {
+      if (document.visibilityState === 'hidden') {
+        flushIdb();
+      }
+    };
+    document.addEventListener('visibilitychange', handleFlushOnLeave);
+    window.addEventListener('pagehide', flushIdb);
+
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', handleFlushOnLeave);
+      window.removeEventListener('pagehide', flushIdb);
+    };
   }, [doc, altMeta, alteracoes, auditText]);
 
   // Pontos de restauração locais automáticos (proteção contra queda de energia)
@@ -468,7 +491,7 @@ export function App() {
         auditText,
       });
       setLocalSnapshots(updated);
-    }, 4000);
+    }, 2500);
 
     return () => window.clearTimeout(timer);
   }, [currentSignature, doc, altMeta, alteracoes, auditText]);
@@ -698,56 +721,82 @@ export function App() {
     }
   }, [isAdminUser, activeTab]);
 
-  // Auto-save contínuo da norma ativa no Firestore (com debounce econômico e proteção de cota)
-  useEffect(() => {
-    if (!isCloudEligible || !googleUser || !cloudNormasLoaded) return;
-    if (cloudQuotaPausedRef.current) return;
+  const initialCloudNormaSignature = useMemo(() => {
+    if (!cloudNormasLoaded) return null;
+    const existingCloud = cloudNormas.find((n) => n.id === activeCloudNormaId);
+    if (!existingCloud) return null;
+    return computeWorkspaceSignature(
+      existingCloud.doc,
+      DEFAULT_ALTERACAO_META,
+      []
+    );
+  }, [cloudNormasLoaded, cloudNormas, activeCloudNormaId]);
 
-    if (lastCloudNormaSigRef.current === null) {
-      const existingCloud = cloudNormasRef.current.find(
-        (n) => n.id === activeCloudNormaId
-      );
-      if (existingCloud) {
-        const existingCloudSig = computeWorkspaceSignature(
-          existingCloud.doc,
-          DEFAULT_ALTERACAO_META,
-          []
-        );
-        if (existingCloudSig === normaSignature) {
-          lastCloudNormaSigRef.current = normaSignature;
-          return;
-        }
-      }
-    }
+  const initialCloudAltSignature = useMemo(() => {
+    if (!cloudAlteracoesLoaded) return null;
+    const existingAlt = cloudAlteracoes.find((a) => a.id === activeCloudAltId);
+    if (!existingAlt) return null;
+    return computeWorkspaceSignature(
+      NORMA_TEMPLATES[0],
+      existingAlt.meta,
+      existingAlt.dispositivos
+    );
+  }, [cloudAlteracoesLoaded, cloudAlteracoes, activeCloudAltId]);
 
-    if (lastCloudNormaSigRef.current === normaSignature) return;
+  const hasDocImages = (doc.imagens?.length ?? 0) > 0;
 
-    const hasImages = (doc.imagens?.length ?? 0) > 0;
-    const debounceMs = hasImages ? 15000 : 6000;
-
-    const timer = window.setTimeout(async () => {
-      if (cloudQuotaPausedRef.current) return;
+  // Auto-save agressivo e resiliente da norma ativa no Firestore:
+  // debounce de 900ms (1.8s com imagens) + teto maxWait de 3.5s (5.5s com imagens),
+  // fila serializada, retry com backoff exponencial e flush em reconexão/visibilitychange
+  const normaAutosave = useFirestoreAutosave({
+    enabled: Boolean(isCloudEligible && googleUser && cloudNormasLoaded),
+    entityKey: activeCloudNormaId,
+    signature: normaSignature,
+    initialCloudSignature: initialCloudNormaSignature,
+    trailingMs: hasDocImages ? 1800 : 900,
+    maxWaitMs: hasDocImages ? 5500 : 3500,
+    pendingStorageKey: STORAGE_KEYS.pendingNormaCloudSync,
+    quotaPaused: cloudQuotaPaused,
+    onSave: async () => {
+      if (!googleUser) return;
+      const exists =
+        knownCloudNormaIdsRef.current.has(activeCloudNormaId) ||
+        cloudNormasRef.current.some((n) => n.id === activeCloudNormaId);
+      await upsertCloudNorma(googleUser.uid, activeCloudNormaId, doc, exists);
+      knownCloudNormaIdsRef.current.add(activeCloudNormaId);
+    },
+    onSaving: () => {
       setCloudSyncStatus('saving');
       setCloudSyncError(null);
-      try {
-        const exists = cloudNormasRef.current.some(
-          (n) => n.id === activeCloudNormaId
+    },
+    onSynced: () => {
+      setCloudSyncStatus('synced');
+      setCloudSyncError(null);
+    },
+    onOffline: () => {
+      setCloudSyncStatus('offline');
+      setCloudSyncError(
+        'Sem conexão com a internet. Suas edições continuam salvas localmente e serão enviadas ao Firestore assim que a conexão voltar.'
+      );
+    },
+    onQuotaExceeded: (err) => {
+      cloudQuotaPausedRef.current = true;
+      setCloudQuotaPaused(true);
+      setCloudSyncStatus('error');
+      setCloudSyncError(
+        formatCloudSyncErrorMessage(
+          err,
+          'Cota diária da nuvem atingida hoje.'
+        )
+      );
+    },
+    onError: (err, isTransientRetryScheduled) => {
+      setCloudSyncStatus('error');
+      if (isTransientRetryScheduled) {
+        setCloudSyncError(
+          'Conexão instável com a nuvem. Suas edições estão seguras localmente e o sistema tentará reenviar automaticamente.'
         );
-        await upsertCloudNorma(
-          googleUser.uid,
-          activeCloudNormaId,
-          doc,
-          exists
-        );
-        lastCloudNormaSigRef.current = normaSignature;
-        setCloudSyncStatus('synced');
-      } catch (err) {
-        setCloudSyncStatus('error');
-        if (isFirestoreQuotaError(err)) {
-          cloudQuotaPausedRef.current = true;
-          setCloudQuotaPaused(true);
-          lastCloudNormaSigRef.current = normaSignature;
-        }
+      } else {
         setCloudSyncError(
           formatCloudSyncErrorMessage(
             err,
@@ -755,66 +804,65 @@ export function App() {
           )
         );
       }
-    }, debounceMs);
+    },
+  });
 
-    return () => window.clearTimeout(timer);
-  }, [
-    isCloudEligible,
-    cloudNormasLoaded,
-    googleUser,
-    doc,
-    normaSignature,
-    activeCloudNormaId,
-  ]);
-
-  // Auto-save contínuo do ato alterador (NR) no Firestore
-  useEffect(() => {
-    if (!isCloudEligible || !googleUser || !cloudAlteracoesLoaded) return;
-    if (cloudQuotaPausedRef.current) return;
-
-    if (lastCloudAltSigRef.current === null) {
-      const existingAlt = cloudAlteracoesRef.current.find(
-        (a) => a.id === activeCloudAltId
+  // Auto-save agressivo e resiliente do ato alterador (NR) no Firestore
+  const altAutosave = useFirestoreAutosave({
+    enabled: Boolean(isCloudEligible && googleUser && cloudAlteracoesLoaded),
+    entityKey: activeCloudAltId,
+    signature: altSignature,
+    initialCloudSignature: initialCloudAltSignature,
+    trailingMs: 900,
+    maxWaitMs: 3500,
+    pendingStorageKey: STORAGE_KEYS.pendingAltCloudSync,
+    quotaPaused: cloudQuotaPaused,
+    onSave: async () => {
+      if (!googleUser) return;
+      const exists =
+        knownCloudAltIdsRef.current.has(activeCloudAltId) ||
+        cloudAlteracoesRef.current.some((a) => a.id === activeCloudAltId);
+      await upsertCloudAlteracao(
+        googleUser.uid,
+        activeCloudAltId,
+        altMeta,
+        alteracoes,
+        exists
       );
-      if (existingAlt) {
-        const existingAltSig = computeWorkspaceSignature(
-          NORMA_TEMPLATES[0],
-          existingAlt.meta,
-          existingAlt.dispositivos
-        );
-        if (existingAltSig === altSignature) {
-          lastCloudAltSigRef.current = altSignature;
-          return;
-        }
-      }
-    }
-
-    if (lastCloudAltSigRef.current === altSignature) return;
-
-    const timer = window.setTimeout(async () => {
-      if (cloudQuotaPausedRef.current) return;
+      knownCloudAltIdsRef.current.add(activeCloudAltId);
+    },
+    onSaving: () => {
       setCloudSyncStatus('saving');
       setCloudSyncError(null);
-      try {
-        const exists = cloudAlteracoesRef.current.some(
-          (a) => a.id === activeCloudAltId
+    },
+    onSynced: () => {
+      setCloudSyncStatus('synced');
+      setCloudSyncError(null);
+    },
+    onOffline: () => {
+      setCloudSyncStatus('offline');
+      setCloudSyncError(
+        'Sem conexão com a internet. Suas alterações continuam salvas localmente e serão sincronizadas ao reconectar.'
+      );
+    },
+    onQuotaExceeded: (err) => {
+      cloudQuotaPausedRef.current = true;
+      setCloudQuotaPaused(true);
+      setCloudSyncStatus('error');
+      setCloudSyncError(
+        formatCloudSyncErrorMessage(
+          err,
+          'Cota diária da nuvem atingida hoje.'
+        )
+      );
+    },
+    onError: (err, isTransientRetryScheduled) => {
+      setCloudSyncStatus('error');
+      if (isTransientRetryScheduled) {
+        setCloudSyncError(
+          'Conexão instável com a nuvem. Alterações salvas localmente; reenvio automático em andamento.'
         );
-        await upsertCloudAlteracao(
-          googleUser.uid,
-          activeCloudAltId,
-          altMeta,
-          alteracoes,
-          exists
-        );
-        lastCloudAltSigRef.current = altSignature;
-        setCloudSyncStatus('synced');
-      } catch (err) {
-        setCloudSyncStatus('error');
-        if (isFirestoreQuotaError(err)) {
-          cloudQuotaPausedRef.current = true;
-          setCloudQuotaPaused(true);
-          lastCloudAltSigRef.current = altSignature;
-        }
+      } else {
         setCloudSyncError(
           formatCloudSyncErrorMessage(
             err,
@@ -822,18 +870,8 @@ export function App() {
           )
         );
       }
-    }, 6000);
-
-    return () => window.clearTimeout(timer);
-  }, [
-    isCloudEligible,
-    cloudAlteracoesLoaded,
-    googleUser,
-    altMeta,
-    alteracoes,
-    altSignature,
-    activeCloudAltId,
-  ]);
+    },
+  });
 
   const handleForceCloudSync = useCallback(async () => {
     if (!isCloudEligible || !googleUser) return;
@@ -842,13 +880,14 @@ export function App() {
     setCloudSyncStatus('saving');
     setCloudSyncError(null);
     try {
-      const normaExists = cloudNormasRef.current.some(
-        (n) => n.id === activeCloudNormaId
-      );
-      const altExists = cloudAlteracoesRef.current.some(
-        (a) => a.id === activeCloudAltId
-      );
+      const normaExists =
+        knownCloudNormaIdsRef.current.has(activeCloudNormaId) ||
+        cloudNormasRef.current.some((n) => n.id === activeCloudNormaId);
+      const altExists =
+        knownCloudAltIdsRef.current.has(activeCloudAltId) ||
+        cloudAlteracoesRef.current.some((a) => a.id === activeCloudAltId);
       await upsertCloudNorma(googleUser.uid, activeCloudNormaId, doc, normaExists);
+      knownCloudNormaIdsRef.current.add(activeCloudNormaId);
       await upsertCloudAlteracao(
         googleUser.uid,
         activeCloudAltId,
@@ -856,8 +895,9 @@ export function App() {
         alteracoes,
         altExists
       );
-      lastCloudNormaSigRef.current = normaSignature;
-      lastCloudAltSigRef.current = altSignature;
+      knownCloudAltIdsRef.current.add(activeCloudAltId);
+      normaAutosave.markSynced(activeCloudNormaId, normaSignature);
+      altAutosave.markSynced(activeCloudAltId, altSignature);
       setCloudSyncStatus('synced');
     } catch (err) {
       setCloudSyncStatus('error');
@@ -882,6 +922,8 @@ export function App() {
     alteracoes,
     normaSignature,
     altSignature,
+    normaAutosave,
+    altAutosave,
   ]);
 
   const pushImmediateLocalSnapshot = useCallback(
@@ -927,23 +969,24 @@ export function App() {
       setCloudSyncStatus('saving');
       setCloudSyncError(null);
       try {
-        const exists = cloudNormasRef.current.some(
-          (n) => n.id === activeCloudNormaId
-        );
+        const exists =
+          knownCloudNormaIdsRef.current.has(activeCloudNormaId) ||
+          cloudNormasRef.current.some((n) => n.id === activeCloudNormaId);
         await upsertCloudNorma(
           googleUser.uid,
           activeCloudNormaId,
           updatedDoc,
           exists
         );
-        lastCloudNormaSigRef.current = normaSignature;
+        knownCloudNormaIdsRef.current.add(activeCloudNormaId);
+        normaAutosave.markSynced(activeCloudNormaId, normaSignature);
         setCloudSyncStatus('synced');
       } catch (err) {
         setCloudSyncStatus('error');
         if (isFirestoreQuotaError(err)) {
           cloudQuotaPausedRef.current = true;
           setCloudQuotaPaused(true);
-          lastCloudNormaSigRef.current = normaSignature;
+          normaAutosave.markSynced(activeCloudNormaId, normaSignature);
         }
         setCloudSyncError(
           formatCloudSyncErrorMessage(
@@ -969,6 +1012,7 @@ export function App() {
     googleUser,
     activeCloudNormaId,
     normaSignature,
+    normaAutosave,
   ]);
 
   const handleSaveAsNewNorma = useCallback(async () => {
@@ -998,6 +1042,7 @@ export function App() {
       setCloudSyncError(null);
       try {
         await upsertCloudNorma(googleUser.uid, nextId, clonedDoc, false);
+        knownCloudNormaIdsRef.current.add(nextId);
         setCloudSyncStatus('synced');
       } catch (err) {
         setCloudSyncStatus('error');
@@ -1017,7 +1062,7 @@ export function App() {
       }
     }
 
-    lastCloudNormaSigRef.current = clonedSig;
+    normaAutosave.markSynced(nextId, clonedSig);
     setActiveCloudNormaId(nextId);
     setDoc(clonedDoc);
     setSidebarSavedFeedback(true);
@@ -1030,67 +1075,67 @@ export function App() {
     pushImmediateLocalSnapshot,
     isCloudEligible,
     googleUser,
+    normaAutosave,
   ]);
 
   const handlePrepareNewDraftSlot = useCallback(async () => {
     await pushImmediateLocalSnapshot(doc);
-    if (isCloudEligible && googleUser) {
-      const exists = cloudNormasRef.current.some(
-        (n) => n.id === activeCloudNormaId
-      );
-      if (exists || lastCloudNormaSigRef.current !== normaSignature) {
-        try {
-          await upsertCloudNorma(
-            googleUser.uid,
-            activeCloudNormaId,
-            doc,
-            exists
-          );
-        } catch {
-          // Mantém snapshot local caso falhe sincronização prévia
-        }
+    if (isCloudEligible && googleUser && !cloudQuotaPausedRef.current) {
+      try {
+        await normaAutosave.flushNow(false);
+      } catch {
+        // Mantém snapshot local caso falhe sincronização prévia
       }
     }
     const freshId = sanitizeFirestoreId(`norma_${Date.now()}`);
-    lastCloudNormaSigRef.current = null;
+    normaAutosave.resetTracking(null);
     setActiveCloudNormaId(freshId);
   }, [
     doc,
     pushImmediateLocalSnapshot,
     isCloudEligible,
     googleUser,
-    activeCloudNormaId,
-    normaSignature,
+    normaAutosave,
   ]);
 
   const handleSelectCloudNorma = useCallback(
     (item: CloudNormaItem) => {
-      if (lastCloudNormaSigRef.current !== normaSignature) {
-        void pushImmediateLocalSnapshot(doc);
+      void pushImmediateLocalSnapshot(doc);
+      if (isCloudEligible && googleUser && !cloudQuotaPausedRef.current) {
+        void normaAutosave.flushNow(false);
       }
-      lastCloudNormaSigRef.current = computeWorkspaceSignature(
+      const selectedSig = computeWorkspaceSignature(
         item.doc,
         DEFAULT_ALTERACAO_META,
         []
       );
+      knownCloudNormaIdsRef.current.add(item.id);
+      normaAutosave.markSynced(item.id, selectedSig);
       setActiveCloudNormaId(item.id);
       setDoc(item.doc);
       setActiveTab('editor');
       setMobileMenuOpen(false);
     },
-    [doc, normaSignature, pushImmediateLocalSnapshot]
+    [
+      doc,
+      pushImmediateLocalSnapshot,
+      isCloudEligible,
+      googleUser,
+      normaAutosave,
+    ]
   );
 
   const handleDeleteCloudNorma = useCallback(
     async (normaId: string) => {
       if (!googleUser) return;
       await deleteCloudNorma(googleUser.uid, normaId);
+      knownCloudNormaIdsRef.current.delete(normaId);
       if (normaId === activeCloudNormaId) {
-        lastCloudNormaSigRef.current = null;
+        normaAutosave.resetTracking(null);
         setActiveCloudNormaId(sanitizeFirestoreId(`norma_${Date.now()}`));
       }
     },
-    [googleUser, activeCloudNormaId]
+    [googleUser, activeCloudNormaId, normaAutosave]
   );
 
   const handleCreateNormaRevision = useCallback(
@@ -2308,7 +2353,8 @@ export function App() {
                 className={`hidden md:inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md border transition-colors whitespace-nowrap shrink-0 ${
                   cloudSyncStatus === 'error'
                     ? 'bg-red-50 text-red-800 border-red-200'
-                    : cloudSyncStatus === 'saving'
+                    : cloudSyncStatus === 'saving' ||
+                        cloudSyncStatus === 'offline'
                       ? 'bg-amber-50 text-amber-800 border-amber-200'
                       : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
                 }`}
@@ -2317,11 +2363,13 @@ export function App() {
                 <span>
                   {cloudSyncStatus === 'saving'
                     ? 'Salvando na nuvem...'
-                    : cloudQuotaPaused
-                      ? 'Nuvem pausada (salvo local)'
-                      : cloudSyncStatus === 'error'
-                        ? 'Erro na nuvem'
-                        : 'Nuvem salva'}
+                    : cloudSyncStatus === 'offline'
+                      ? 'Sem internet (salvo local)'
+                      : cloudQuotaPaused
+                        ? 'Nuvem pausada (salvo local)'
+                        : cloudSyncStatus === 'error'
+                          ? 'Reenviando à nuvem...'
+                          : 'Nuvem salva'}
                 </span>
               </button>
             )}
@@ -2427,6 +2475,8 @@ export function App() {
               driveAuthError={driveAuthError}
               onConnectGoogleDrive={handleGoogleDriveSignIn}
               onSaveNormaCopyToDrive={handleSaveNormaCopyToDrive}
+              aiModelEmenta={userProfile?.aiModelEmenta}
+              onOpenAccountAiSettings={() => handleNavigate('conta')}
             />
           )}
           {activeTab === 'ajuste' && (
@@ -2453,6 +2503,8 @@ export function App() {
               }
               text={activeAuditText}
               onChangeCustomText={handleChangeAvulsoText}
+              aiModelAuditoria={userProfile?.aiModelAuditoria}
+              onOpenAccountAiSettings={() => handleNavigate('conta')}
             />
           )}
           {activeTab === 'drive' && (
@@ -2514,12 +2566,18 @@ export function App() {
                   false
                 );
               }}
+              onUpdateAiPreferences={async (prefs) => {
+                if (!googleUser) return;
+                await saveUserAiPreferences(googleUser.uid, prefs);
+              }}
               onSelectCloudNorma={(item) => {
-                lastCloudNormaSigRef.current = computeWorkspaceSignature(
+                const selectedSig = computeWorkspaceSignature(
                   item.doc,
                   DEFAULT_ALTERACAO_META,
                   []
                 );
+                knownCloudNormaIdsRef.current.add(item.id);
+                normaAutosave.markSynced(item.id, selectedSig);
                 setActiveCloudNormaId(item.id);
                 setDoc(item.doc);
                 setActiveTab('editor');
@@ -2536,12 +2594,14 @@ export function App() {
                   id: nextId,
                   updatedAt: new Date().toISOString(),
                 };
-                lastCloudNormaSigRef.current = computeWorkspaceSignature(
+                const freshSig = computeWorkspaceSignature(
                   freshDoc,
                   DEFAULT_ALTERACAO_META,
                   []
                 );
                 await upsertCloudNorma(googleUser.uid, nextId, freshDoc, false);
+                knownCloudNormaIdsRef.current.add(nextId);
+                normaAutosave.markSynced(nextId, freshSig);
                 setActiveCloudNormaId(nextId);
                 setDoc(freshDoc);
                 setActiveTab('editor');
@@ -2549,16 +2609,20 @@ export function App() {
               onDeleteCloudNorma={async (normaId) => {
                 if (!googleUser) return;
                 await deleteCloudNorma(googleUser.uid, normaId);
+                knownCloudNormaIdsRef.current.delete(normaId);
                 if (normaId === activeCloudNormaId) {
+                  normaAutosave.resetTracking(null);
                   setActiveCloudNormaId(sanitizeFirestoreId(`norma_${Date.now()}`));
                 }
               }}
               onSelectCloudAlteracao={(item) => {
-                lastCloudAltSigRef.current = computeWorkspaceSignature(
+                const selectedSig = computeWorkspaceSignature(
                   NORMA_TEMPLATES[0],
                   item.meta,
                   item.dispositivos
                 );
+                knownCloudAltIdsRef.current.add(item.id);
+                altAutosave.markSynced(item.id, selectedSig);
                 setActiveCloudAltId(item.id);
                 setAltMeta(item.meta);
                 setAlteracoes(item.dispositivos);
@@ -2571,7 +2635,7 @@ export function App() {
                   ...DEFAULT_ALTERACAO_META,
                   atoAlteradorNumero: '',
                 };
-                lastCloudAltSigRef.current = computeWorkspaceSignature(
+                const freshSig = computeWorkspaceSignature(
                   NORMA_TEMPLATES[0],
                   freshMeta,
                   []
@@ -2583,6 +2647,8 @@ export function App() {
                   [],
                   false
                 );
+                knownCloudAltIdsRef.current.add(nextId);
+                altAutosave.markSynced(nextId, freshSig);
                 setActiveCloudAltId(nextId);
                 setAltMeta(freshMeta);
                 setAlteracoes([]);
@@ -2591,7 +2657,9 @@ export function App() {
               onDeleteCloudAlteracao={async (altId) => {
                 if (!googleUser) return;
                 await deleteCloudAlteracao(googleUser.uid, altId);
+                knownCloudAltIdsRef.current.delete(altId);
                 if (altId === activeCloudAltId) {
+                  altAutosave.resetTracking(null);
                   setActiveCloudAltId(sanitizeFirestoreId(`alt_${Date.now()}`));
                 }
               }}

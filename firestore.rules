@@ -76,6 +76,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'uid', 'nomeCompleto', 'email', 'orgao', 'cargo',
           'esferaPreferida', 'role', 'status', 'observacaoAcesso',
+          'aiModelEmenta', 'aiModelAuditoria',
           'createdAt', 'updatedAt'
         ])
         && data.uid is string
@@ -98,6 +99,14 @@ service cloud.firestore {
         && data.status in ['pendente', 'aprovado', 'bloqueado']
         && data.observacaoAcesso is string
         && data.observacaoAcesso.size() <= 300
+        && (!('aiModelEmenta' in data) || (
+          data.aiModelEmenta is string
+          && data.aiModelEmenta in ['flash-lite', 'flash-padrao', 'flash-profundo']
+        ))
+        && (!('aiModelAuditoria' in data) || (
+          data.aiModelAuditoria is string
+          && data.aiModelAuditoria in ['flash-lite', 'flash-padrao', 'flash-profundo']
+        ))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -301,17 +310,19 @@ service cloud.firestore {
             isAdmin()
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'status', 'role', 'observacaoAcesso', 'nomeCompleto', 'email',
-              'orgao', 'cargo', 'esferaPreferida', 'updatedAt'
+              'orgao', 'cargo', 'esferaPreferida', 'aiModelEmenta',
+              'aiModelAuditoria', 'updatedAt'
             ])
           )
-          // Ação do próprio titular: atualizar apenas dados cadastrais
+          // Ação do próprio titular: atualizar dados cadastrais e preferências de IA
           || (
             isVerifiedOwner(userId)
             && incoming().status == existing().status
             && incoming().role == existing().role
             && incoming().observacaoAcesso == existing().observacaoAcesso
             && incoming().diff(existing()).affectedKeys().hasOnly([
-              'nomeCompleto', 'email', 'orgao', 'cargo', 'esferaPreferida', 'updatedAt'
+              'nomeCompleto', 'email', 'orgao', 'cargo', 'esferaPreferida',
+              'aiModelEmenta', 'aiModelAuditoria', 'updatedAt'
             ])
           )
         );

@@ -1,15 +1,25 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  Cpu,
   Info,
+  Loader2,
+  RotateCcw,
   Sparkles,
   Wand2,
+  X,
   XCircle,
 } from 'lucide-react';
 import { NormaTipo } from '../types/norma';
 import { auditNormaText } from '../utils/legistica';
 import { isTechnicalOperationalProfile } from '../utils/normaProfiles';
+import {
+  DEFAULT_AI_MODEL_AUDITORIA,
+  SelectableAiModelPresetId,
+  getAiModelSpec,
+} from '../utils/aiModels';
+import { AiAuditResult, requestAiNormaAudit } from '../utils/auditoriaAssistant';
 
 export type AuditSourceMode = 'editor' | 'ajuste' | 'avulso';
 
@@ -21,6 +31,8 @@ interface AuditorNormaViewProps {
   editorDocTitle: string;
   ajusteDocTitle: string;
   activeDocTipo?: NormaTipo;
+  aiModelAuditoria?: SelectableAiModelPresetId;
+  onOpenAccountAiSettings?: () => void;
 }
 
 const EXEMPLO_COM_ERROS = `Regulamento de Uso de Espaços Públicos
@@ -42,6 +54,8 @@ export const AuditorNormaView: React.FC<AuditorNormaViewProps> = ({
   editorDocTitle,
   ajusteDocTitle,
   activeDocTipo,
+  aiModelAuditoria = DEFAULT_AI_MODEL_AUDITORIA,
+  onOpenAccountAiSettings,
 }) => {
   const effectiveTipo = source === 'avulso' ? undefined : activeDocTipo;
   const summary = useMemo(
@@ -51,6 +65,59 @@ export const AuditorNormaView: React.FC<AuditorNormaViewProps> = ({
   const isTechMode = Boolean(
     effectiveTipo && isTechnicalOperationalProfile(effectiveTipo)
   );
+  const activeAiSpec = useMemo(
+    () => getAiModelSpec(aiModelAuditoria),
+    [aiModelAuditoria]
+  );
+
+  const [aiAuditLoading, setAiAuditLoading] = useState(false);
+  const [aiAuditError, setAiAuditError] = useState<string | null>(null);
+  const [aiAuditResult, setAiAuditResult] = useState<AiAuditResult | null>(null);
+  const aiAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      aiAbortRef.current?.abort();
+    };
+  }, []);
+
+  const handleRunAiAudit = async () => {
+    if (text.trim().length < 10) {
+      setAiAuditError(
+        'Informe ao menos um trecho normativo antes de iniciar a auditoria com IA.'
+      );
+      return;
+    }
+
+    aiAbortRef.current?.abort();
+    const controller = new AbortController();
+    aiAbortRef.current = controller;
+    setAiAuditLoading(true);
+    setAiAuditError(null);
+
+    try {
+      const result = await requestAiNormaAudit(
+        text,
+        effectiveTipo,
+        aiModelAuditoria,
+        controller.signal
+      );
+      if (!controller.signal.aborted) {
+        setAiAuditResult(result);
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setAiAuditError(
+        error instanceof Error
+          ? error.message
+          : 'Não foi possível concluir a auditoria com IA.'
+      );
+    } finally {
+      if (!controller.signal.aborted) {
+        setAiAuditLoading(false);
+      }
+    }
+  };
 
   const applyAutomaticFixes = () => {
     let fixed = text;
@@ -128,6 +195,24 @@ export const AuditorNormaView: React.FC<AuditorNormaViewProps> = ({
               <Sparkles className="w-3.5 h-3.5" />
               <span>Testar exemplo com falhas</span>
             </button>
+
+            <button
+              type="button"
+              onClick={() => void handleRunAiAudit()}
+              disabled={aiAuditLoading || text.trim().length < 10}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-50 rounded-md transition-colors whitespace-nowrap shrink-0"
+            >
+              {aiAuditLoading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="w-3.5 h-3.5" />
+              )}
+              <span>
+                {aiAuditLoading
+                  ? 'Auditando com IA...'
+                  : 'Auditoria Semântica com IA'}
+              </span>
+            </button>
           </div>
         </div>
 
@@ -142,6 +227,24 @@ export const AuditorNormaView: React.FC<AuditorNormaViewProps> = ({
                   : 'Texto colado / editado manualmente neste painel'}
             </strong>
           </span>
+
+          <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-slate-200 bg-slate-50">
+              <Cpu className="w-3 h-3 text-slate-600" />
+              <span>
+                Modelo IA ativo: <strong>{activeAiSpec.nome}</strong> ({activeAiSpec.complexidadeLabel})
+              </span>
+            </span>
+            {onOpenAccountAiSettings && (
+              <button
+                type="button"
+                onClick={onOpenAccountAiSettings}
+                className="text-slate-700 underline hover:text-slate-900 font-medium whitespace-nowrap"
+              >
+                Alterar modelo
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-2 border-t border-slate-100">
@@ -220,8 +323,142 @@ export const AuditorNormaView: React.FC<AuditorNormaViewProps> = ({
           )}
         </div>
 
-        {/* Relatório de Apontamentos */}
+        {/* Relatório de Apontamentos (Automatizado + IA) */}
         <div className="xl:col-span-6 space-y-4">
+          {aiAuditError && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start justify-between gap-3 text-xs text-red-800">
+              <div className="flex items-start gap-2 min-w-0">
+                <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                <span>{aiAuditError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAiAuditError(null)}
+                aria-label="Fechar erro da auditoria com IA"
+                className="text-red-500 hover:text-red-800 p-0.5 shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {aiAuditResult && (
+            <section className="bg-white border border-slate-300 rounded-lg overflow-hidden">
+              <div className="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-slate-800 shrink-0" />
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900">
+                      Auditoria Semântica com IA
+                    </h3>
+                    <p className="text-[11px] text-slate-500">
+                      Modelo utilizado: {aiAuditResult.modeloUtilizado || activeAiSpec.nome}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 text-xs font-semibold font-mono tabular-nums rounded border border-slate-300 bg-white text-slate-900">
+                    {aiAuditResult.pontuacaoConformidade}/100
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleRunAiAudit()}
+                    disabled={aiAuditLoading}
+                    className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded transition-colors whitespace-nowrap"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Reanalisar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAiAuditResult(null)}
+                    aria-label="Fechar auditoria com IA"
+                    className="p-1 text-slate-500 hover:text-slate-900 rounded"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-5 space-y-4">
+                <p className="text-sm text-slate-800 leading-relaxed">
+                  {aiAuditResult.resumoGeral}
+                </p>
+
+                {aiAuditResult.apontamentos.length > 0 && (
+                  <div className="space-y-2.5">
+                    <h4 className="text-xs font-semibold text-slate-700">
+                      Achados semânticos e redacionais ({aiAuditResult.apontamentos.length})
+                    </h4>
+                    <div className="space-y-2.5">
+                      {aiAuditResult.apontamentos.map((item, idx) => {
+                        const isErr = item.severidade === 'erro';
+                        const isWarn = item.severidade === 'alerta';
+                        return (
+                          <div
+                            key={`${idx}-${item.local}`}
+                            className="border border-slate-200 rounded-md p-3.5 space-y-1.5"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                              <span
+                                className={`inline-flex items-center gap-1 font-semibold ${
+                                  isErr
+                                    ? 'text-red-700'
+                                    : isWarn
+                                      ? 'text-amber-700'
+                                      : 'text-slate-700'
+                                }`}
+                              >
+                                {isErr ? (
+                                  <XCircle className="w-3.5 h-3.5 shrink-0" />
+                                ) : isWarn ? (
+                                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                                ) : (
+                                  <Info className="w-3.5 h-3.5 shrink-0" />
+                                )}
+                                {item.local}
+                              </span>
+                              <span className="text-[11px] text-slate-500">
+                                {item.regra}
+                              </span>
+                            </div>
+                            <p className="text-xs font-medium text-slate-900 leading-relaxed">
+                              {item.descricao}
+                            </p>
+                            <p className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded p-2 leading-relaxed">
+                              <strong className="text-slate-800">Sugestão:</strong>{' '}
+                              {item.sugestao}
+                            </p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {aiAuditResult.pontosPositivos.length > 0 && (
+                  <div className="space-y-1.5 border-t border-slate-200 pt-3">
+                    <h4 className="text-xs font-semibold text-slate-700">
+                      Destaques positivos identificados pela IA
+                    </h4>
+                    <ul className="space-y-1">
+                      {aiAuditResult.pontosPositivos.map((ponto, idx) => (
+                        <li
+                          key={`${idx}-${ponto.slice(0, 16)}`}
+                          className="flex items-start gap-2 text-xs text-slate-700"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                          <span>{ponto}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
           {!text.trim() ? (
             <div className="bg-white border border-slate-200 rounded-lg p-8 text-center space-y-2">
               <p className="text-sm font-medium text-slate-900">

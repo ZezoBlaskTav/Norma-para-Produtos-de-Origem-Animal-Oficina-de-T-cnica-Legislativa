@@ -23,6 +23,12 @@ import {
   NormaTipo,
   VigenciaTipo,
 } from '../types/norma';
+import {
+  DEFAULT_AI_MODEL_AUDITORIA,
+  DEFAULT_AI_MODEL_EMENTA,
+  SelectableAiModelPresetId,
+  normalizeSelectableAiPreset,
+} from './aiModels';
 import { auth, db } from './googleAuth';
 
 export const ADMIN_EMAIL = 'joseluisblaskowskitavares@gmail.com';
@@ -97,6 +103,42 @@ export function isFirestoreQuotaError(error: unknown): boolean {
   );
 }
 
+export function isFirestoreTransientError(error: unknown): boolean {
+  if (isFirestoreQuotaError(error)) return false;
+
+  const raw =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : JSON.stringify(error ?? '');
+  const lower = raw.toLowerCase();
+
+  if (
+    lower.includes('missing or insufficient permissions') ||
+    lower.includes('permission-denied') ||
+    lower.includes('unauthenticated') ||
+    lower.includes('invalid-argument')
+  ) {
+    return false;
+  }
+
+  return (
+    lower.includes('unavailable') ||
+    lower.includes('deadline-exceeded') ||
+    lower.includes('aborted') ||
+    lower.includes('cancelled') ||
+    lower.includes('internal') ||
+    lower.includes('client is offline') ||
+    lower.includes('network') ||
+    lower.includes('failed to fetch') ||
+    lower.includes('err_network') ||
+    lower.includes('timeout') ||
+    lower.includes('etimedout') ||
+    lower.includes('econnreset')
+  );
+}
+
 export function formatCloudSyncErrorMessage(
   error: unknown,
   fallback: string
@@ -132,6 +174,8 @@ export interface UserProfileData {
   role: UserRole;
   status: UserAccessStatus;
   observacaoAcesso: string;
+  aiModelEmenta: SelectableAiModelPresetId;
+  aiModelAuditoria: SelectableAiModelPresetId;
   needsAdminRepair?: boolean;
   createdAtIso?: string;
   updatedAtIso?: string;
@@ -333,6 +377,14 @@ function parseUserProfileDoc(
     role,
     status,
     observacaoAcesso: clampString(d.observacaoAcesso, 300),
+    aiModelEmenta: normalizeSelectableAiPreset(
+      d.aiModelEmenta,
+      DEFAULT_AI_MODEL_EMENTA
+    ),
+    aiModelAuditoria: normalizeSelectableAiPreset(
+      d.aiModelAuditoria,
+      DEFAULT_AI_MODEL_AUDITORIA
+    ),
     needsAdminRepair,
     createdAtIso: toIsoFromTimestamp(d.createdAt),
     updatedAtIso: toIsoFromTimestamp(d.updatedAt),
@@ -419,6 +471,8 @@ export async function saveUserProfile(
         role,
         status,
         observacaoAcesso: '',
+        aiModelEmenta: DEFAULT_AI_MODEL_EMENTA,
+        aiModelAuditoria: DEFAULT_AI_MODEL_AUDITORIA,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -435,6 +489,35 @@ export async function saveUserProfile(
       orgao: clampString(input.orgao.trim(), 160),
       cargo: clampString(input.cargo.trim(), 120),
       esferaPreferida: input.esferaPreferida,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function saveUserAiPreferences(
+  uid: string,
+  prefs: {
+    aiModelEmenta: SelectableAiModelPresetId;
+    aiModelAuditoria: SelectableAiModelPresetId;
+  }
+): Promise<void> {
+  const path = `users/${uid}`;
+  const ref = doc(db, 'users', uid);
+  const aiModelEmenta = normalizeSelectableAiPreset(
+    prefs.aiModelEmenta,
+    DEFAULT_AI_MODEL_EMENTA
+  );
+  const aiModelAuditoria = normalizeSelectableAiPreset(
+    prefs.aiModelAuditoria,
+    DEFAULT_AI_MODEL_AUDITORIA
+  );
+
+  try {
+    await updateDoc(ref, {
+      aiModelEmenta,
+      aiModelAuditoria,
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -730,7 +813,21 @@ export async function upsertCloudNorma(
 
   try {
     if (shouldUpdate) {
-      await updateDoc(ref, sharedFields);
+      try {
+        await updateDoc(ref, sharedFields);
+      } catch (updateErr) {
+        const code = (updateErr as { code?: string } | null)?.code || '';
+        if (code === 'not-found') {
+          await setDoc(ref, {
+            ownerId: uid,
+            ...sharedFields,
+            createdAt: serverTimestamp(),
+          });
+          shouldUpdate = false;
+        } else {
+          throw updateErr;
+        }
+      }
     } else {
       await setDoc(ref, {
         ownerId: uid,
@@ -844,7 +941,21 @@ export async function upsertCloudAlteracao(
 
   try {
     if (shouldUpdate) {
-      await updateDoc(ref, payload);
+      try {
+        await updateDoc(ref, payload);
+      } catch (updateErr) {
+        const code = (updateErr as { code?: string } | null)?.code || '';
+        if (code === 'not-found') {
+          await setDoc(ref, {
+            ownerId: uid,
+            ...payload,
+            createdAt: serverTimestamp(),
+          });
+          shouldUpdate = false;
+        } else {
+          throw updateErr;
+        }
+      }
     } else {
       await setDoc(ref, {
         ownerId: uid,

@@ -55,6 +55,16 @@
           "maxLength": 300,
           "description": "Nota administrativa opcional sobre a liberação ou restrição."
         },
+        "aiModelEmenta": {
+          "type": "string",
+          "enum": ["flash-lite", "flash-padrao", "flash-profundo"],
+          "description": "Preset de modelo Gemini escolhido pelo usuário para geração de ementas."
+        },
+        "aiModelAuditoria": {
+          "type": "string",
+          "enum": ["flash-lite", "flash-padrao", "flash-profundo"],
+          "description": "Preset de modelo Gemini escolhido pelo usuário para auditoria normativa com IA."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",

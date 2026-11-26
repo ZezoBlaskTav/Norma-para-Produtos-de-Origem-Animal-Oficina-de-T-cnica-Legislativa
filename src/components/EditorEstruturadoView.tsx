@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  BookOpen,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -21,6 +24,7 @@ import {
   Highlighter,
   History,
   ImagePlus,
+  Loader2,
   LocateFixed,
   MessageSquareText,
   Plus,
@@ -28,6 +32,7 @@ import {
   RotateCcw,
   Save,
   ShieldCheck,
+  Sparkles,
   SpellCheck,
   Trash2,
   Wand2,
@@ -81,6 +86,8 @@ import {
 } from '../utils/normaValidation';
 import { buildComplianceChecklist } from '../utils/normaChecklist';
 import { ChecklistConformidadePanel } from './ChecklistConformidadePanel';
+import { generateIndiceRemissivo } from '../utils/indiceRemissivo';
+import { IndiceRemissivoPanel } from './IndiceRemissivoPanel';
 import { ArtigoDiffItem, FieldDiffItem } from '../utils/normaDiff';
 import { NORMA_TEMPLATES } from '../data/templates';
 import { useSpellcheck } from '../hooks/useSpellcheck';
@@ -98,6 +105,44 @@ import {
   ReviewedTextarea,
   TextSelectionRange,
 } from './ReviewedTextFields';
+import {
+  EmentaSuggestionResult,
+  hasEmentaAnalysisContent,
+  requestEmentaSuggestion,
+} from '../utils/ementaAssistant';
+import {
+  DEFAULT_AI_MODEL_EMENTA,
+  SelectableAiModelPresetId,
+  getAiModelSpec,
+} from '../utils/aiModels';
+import { MotionConfig } from 'motion/react';
+import {
+  SortableDragHandleButton,
+  SortableNormaGroup,
+  SortableNormaItem,
+} from './SortableNormaLists';
+import {
+  DivisionKind,
+  ReorderDirection,
+  buildDivisionGroupSlices,
+  getSubdivisionMoveCapabilities,
+  moveAlineaInArtigos,
+  moveArrayItem,
+  moveArtigoInList,
+  moveDivisionGroupInArtigos,
+  moveIncisoInArtigos,
+  moveParagrafoAlineaInArtigos,
+  moveParagrafoInArtigos,
+  moveParagrafoIncisoInArtigos,
+  moveSubdivisionBlockInArtigos,
+  reorderAlineasInArtigos,
+  reorderArtigosSubsetInList,
+  reorderExplicitDivisionGroupsInArtigos,
+  reorderIncisosInArtigos,
+  reorderParagrafoAlineasInArtigos,
+  reorderParagrafoIncisosInArtigos,
+  reorderParagrafosInArtigos,
+} from '../utils/normaReorder';
 import {
   FieldReviewHints,
   HIGHLIGHT_MARK_COLORS,
@@ -152,19 +197,11 @@ interface EditorEstruturadoViewProps {
   onSaveNormaCopyToDrive: (
     options: Omit<SaveNormaCopyToDriveOptions, 'normaId' | 'doc' | 'savedByEmail'>
   ) => Promise<SaveNormaCopyToDriveResult>;
+  aiModelEmenta?: SelectableAiModelPresetId;
+  onOpenAccountAiSettings?: () => void;
 }
 
 type EditorLayoutMode = 'dividido' | 'editor' | 'previa';
-
-type DivisionKind = 'titulo' | 'capitulo' | 'secao' | 'subsecao';
-
-interface DivisionGroup {
-  key: string;
-  hasExplicitDivision: boolean;
-  divisionText: string;
-  leaderArtId: string;
-  items: Array<{ art: ArtigoItem; globalIndex: number }>;
-}
 
 const DIVISION_KIND_PLURAL: Record<DivisionKind, string> = {
   titulo: 'títulos',
@@ -313,11 +350,13 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
   driveAuthError,
   onConnectGoogleDrive,
   onSaveNormaCopyToDrive,
+  aiModelEmenta = DEFAULT_AI_MODEL_EMENTA,
+  onOpenAccountAiSettings,
 }) => {
   const [copied, setCopied] = useState(false);
   const [layoutMode, setLayoutMode] = useState<EditorLayoutMode>('dividido');
   const [rightPaneMode, setRightPaneMode] = useState<
-    'previa' | 'checklist' | 'revisor' | 'historico'
+    'previa' | 'checklist' | 'indice' | 'revisor' | 'historico'
   >('previa');
   const [highlightReview, setHighlightReview] = useState(true);
   const [showInlineHints, setShowInlineHints] = useState(true);
@@ -368,6 +407,25 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
   const [driveCopyError, setDriveCopyError] = useState<string | null>(null);
   const [driveCopyResult, setDriveCopyResult] =
     useState<SaveNormaCopyToDriveResult | null>(null);
+  const [ementaAiLoading, setEmentaAiLoading] = useState(false);
+  const [ementaAiError, setEmentaAiError] = useState<string | null>(null);
+  const [ementaAiSuggestion, setEmentaAiSuggestion] =
+    useState<EmentaSuggestionResult | null>(null);
+  const ementaAiAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    ementaAiAbortRef.current?.abort();
+    ementaAiAbortRef.current = null;
+    setEmentaAiLoading(false);
+    setEmentaAiError(null);
+    setEmentaAiSuggestion(null);
+  }, [doc.id]);
+
+  useEffect(() => {
+    return () => {
+      ementaAiAbortRef.current?.abort();
+    };
+  }, []);
 
   const validImagesCount = useMemo(
     () =>
@@ -419,6 +477,10 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
   const complianceChecklist = useMemo(
     () => buildComplianceChecklist(doc, fieldValidation, audit),
     [doc, fieldValidation, audit]
+  );
+  const indiceRemissivo = useMemo(
+    () => generateIndiceRemissivo(doc),
+    [doc]
   );
   const review = useMemo(
     () => analyzeNormaLinguistics(doc, ignoredSignatures, spellChecker),
@@ -596,33 +658,21 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
     return null;
   }, [doc.artigos]);
 
-  const divisionGroups = useMemo<DivisionGroup[]>(() => {
-    const groups: DivisionGroup[] = [];
-    for (let i = 0; i < doc.artigos.length; i++) {
-      const art = doc.artigos[i];
-      const divVal = activeDivisionKind ? art[activeDivisionKind] : undefined;
-      if (activeDivisionKind && divVal !== undefined) {
-        groups.push({
-          key: `divgrp-${activeDivisionKind}-${art.id}`,
-          hasExplicitDivision: true,
-          divisionText: divVal,
-          leaderArtId: art.id,
-          items: [{ art, globalIndex: i }],
-        });
-      } else if (groups.length === 0) {
-        groups.push({
-          key: 'divgrp-inicial',
-          hasExplicitDivision: false,
-          divisionText: '',
-          leaderArtId: art.id,
-          items: [{ art, globalIndex: i }],
-        });
-      } else {
-        groups[groups.length - 1].items.push({ art, globalIndex: i });
-      }
-    }
-    return groups;
-  }, [doc.artigos, activeDivisionKind]);
+  const groupUiKeyMapRef = useRef<Record<string, string>>({});
+
+  useEffect(() => {
+    groupUiKeyMapRef.current = {};
+  }, [doc.id]);
+
+  const getStableGroupKey = useCallback(
+    (leaderArtId: string) => groupUiKeyMapRef.current[leaderArtId] || leaderArtId,
+    []
+  );
+
+  const divisionGroups = useMemo(
+    () => buildDivisionGroupSlices(doc.artigos, activeDivisionKind),
+    [doc.artigos, activeDivisionKind]
+  );
 
   const hasDivisionsInDoc = activeDivisionKind !== null;
 
@@ -655,6 +705,53 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
       [key]: value,
       updatedAt: new Date().toISOString(),
     });
+  };
+
+  const canSuggestEmenta = useMemo(
+    () => hasEmentaAnalysisContent(doc),
+    [doc]
+  );
+
+  const handleGenerateEmentaSuggestion = async () => {
+    if (!canSuggestEmenta) {
+      setEmentaAiError(
+        `Redija ao menos um ${isTech ? 'item operacional' : 'artigo'} antes de solicitar a sugestão.`
+      );
+      return;
+    }
+    ementaAiAbortRef.current?.abort();
+    const controller = new AbortController();
+    ementaAiAbortRef.current = controller;
+    setEmentaAiLoading(true);
+    setEmentaAiError(null);
+
+    try {
+      const suggestion = await requestEmentaSuggestion(
+        doc,
+        aiModelEmenta,
+        controller.signal
+      );
+      if (!controller.signal.aborted) {
+        setEmentaAiSuggestion(suggestion);
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      const msg =
+        error instanceof Error
+          ? error.message
+          : 'Não foi possível gerar a sugestão de ementa.';
+      setEmentaAiError(msg);
+    } finally {
+      if (!controller.signal.aborted) {
+        setEmentaAiLoading(false);
+      }
+    }
+  };
+
+  const handleApplyEmentaSuggestion = (texto: string) => {
+    updateField('ementa', texto);
+    setEmentaAiSuggestion(null);
+    setEmentaAiError(null);
   };
 
   const handleTipoChange = (tipo: NormaTipo) => {
@@ -1276,6 +1373,323 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
     );
   };
 
+  const handleMoveDivisionGroup = (
+    groupIndex: number,
+    direction: ReorderDirection
+  ) => {
+    const nextArtigos = moveDivisionGroupInArtigos(
+      doc.artigos,
+      activeDivisionKind,
+      groupIndex,
+      direction,
+      isTech
+    );
+    if (nextArtigos === doc.artigos) return;
+    updateField('artigos', nextArtigos);
+  };
+
+  const handleMoveSubdivisionBlock = (
+    artId: string,
+    kind: DivisionKind,
+    direction: ReorderDirection
+  ) => {
+    const oldGroups = buildDivisionGroupSlices(doc.artigos, activeDivisionKind);
+    const nextArtigos = moveSubdivisionBlockInArtigos(
+      doc.artigos,
+      artId,
+      kind,
+      direction,
+      isTech
+    );
+    if (nextArtigos === doc.artigos) return;
+    if (activeDivisionKind) {
+      const newGroups = buildDivisionGroupSlices(nextArtigos, activeDivisionKind);
+      setCollapsedTitulos((prev) => {
+        const next = { ...prev };
+        for (let i = 0; i < Math.min(oldGroups.length, newGroups.length); i++) {
+          const oldKey = oldGroups[i].key;
+          const newKey = newGroups[i].key;
+          if (oldKey !== newKey && oldKey in prev) {
+            next[newKey] = prev[oldKey];
+            delete next[oldKey];
+          }
+        }
+        return next;
+      });
+    }
+    updateField('artigos', nextArtigos);
+  };
+
+  const syncLeaderKeysAfterSwap = (
+    swappedLeaderIds: Array<{ oldId: string; newId: string }>
+  ) => {
+    if (!activeDivisionKind || swappedLeaderIds.length === 0) return;
+    const explicitLeaderSet = new Set(
+      divisionGroups
+        .filter((g) => g.hasExplicitDivision)
+        .map((g) => g.leaderArtId)
+    );
+    const aliasSnapshot = { ...groupUiKeyMapRef.current };
+    for (const { oldId, newId } of swappedLeaderIds) {
+      if (!explicitLeaderSet.has(oldId)) continue;
+      groupUiKeyMapRef.current[newId] = aliasSnapshot[oldId] || oldId;
+      if (!swappedLeaderIds.some((s) => s.newId === oldId)) {
+        delete groupUiKeyMapRef.current[oldId];
+      }
+    }
+    setCollapsedTitulos((prev) => {
+      const next = { ...prev };
+      for (const { oldId, newId } of swappedLeaderIds) {
+        const oldKey = `divgrp-${activeDivisionKind}-${oldId}`;
+        const newKey = `divgrp-${activeDivisionKind}-${newId}`;
+        if (oldKey in prev) {
+          next[newKey] = prev[oldKey];
+          if (!swappedLeaderIds.some((s) => s.newId === oldId)) {
+            delete next[oldKey];
+          }
+        }
+      }
+      return next;
+    });
+  };
+
+  const handleMoveArtigo = (
+    artIndex: number,
+    direction: ReorderDirection
+  ) => {
+    const { nextArtigos, swappedLeaderIds } = moveArtigoInList(
+      doc.artigos,
+      artIndex,
+      direction
+    );
+    if (nextArtigos === doc.artigos) return;
+    syncLeaderKeysAfterSwap(swappedLeaderIds);
+    updateField('artigos', nextArtigos);
+  };
+
+  const handleReorderDivisionGroups = (reorderedStableKeys: string[]) => {
+    const explicitGroups = divisionGroups.filter((g) => g.hasExplicitDivision);
+    const keyToLeader = new Map(
+      explicitGroups.map((g) => [getStableGroupKey(g.leaderArtId), g.leaderArtId])
+    );
+    const reorderedLeaderIds = reorderedStableKeys
+      .map((k) => keyToLeader.get(k))
+      .filter((id): id is string => Boolean(id));
+    const nextArtigos = reorderExplicitDivisionGroupsInArtigos(
+      doc.artigos,
+      activeDivisionKind,
+      reorderedLeaderIds,
+      isTech
+    );
+    if (nextArtigos === doc.artigos) return;
+    updateField('artigos', nextArtigos);
+  };
+
+  const handleReorderArtigosInGroup = (
+    startIndex: number,
+    endIndex: number,
+    reorderedArtIds: string[]
+  ) => {
+    const { nextArtigos, swappedLeaderIds } = reorderArtigosSubsetInList(
+      doc.artigos,
+      startIndex,
+      endIndex,
+      reorderedArtIds
+    );
+    if (nextArtigos === doc.artigos) return;
+    syncLeaderKeysAfterSwap(swappedLeaderIds);
+    updateField('artigos', nextArtigos);
+  };
+
+  const handleMoveInciso = (
+    artId: string,
+    incisoIndex: number,
+    direction: ReorderDirection
+  ) => {
+    updateField(
+      'artigos',
+      moveIncisoInArtigos(doc.artigos, artId, incisoIndex, direction)
+    );
+  };
+
+  const handleReorderIncisos = (artId: string, reorderedIds: string[]) => {
+    const nextArtigos = reorderIncisosInArtigos(doc.artigos, artId, reorderedIds);
+    if (nextArtigos !== doc.artigos) updateField('artigos', nextArtigos);
+  };
+
+  const handleMoveAlinea = (
+    artId: string,
+    incId: string,
+    alineaIndex: number,
+    direction: ReorderDirection
+  ) => {
+    updateField(
+      'artigos',
+      moveAlineaInArtigos(doc.artigos, artId, incId, alineaIndex, direction)
+    );
+  };
+
+  const handleReorderAlineas = (
+    artId: string,
+    incId: string,
+    reorderedIds: string[]
+  ) => {
+    const nextArtigos = reorderAlineasInArtigos(
+      doc.artigos,
+      artId,
+      incId,
+      reorderedIds
+    );
+    if (nextArtigos !== doc.artigos) updateField('artigos', nextArtigos);
+  };
+
+  const handleMoveParagrafo = (
+    artId: string,
+    paragrafoIndex: number,
+    direction: ReorderDirection
+  ) => {
+    updateField(
+      'artigos',
+      moveParagrafoInArtigos(doc.artigos, artId, paragrafoIndex, direction)
+    );
+  };
+
+  const handleReorderParagrafos = (artId: string, reorderedIds: string[]) => {
+    const nextArtigos = reorderParagrafosInArtigos(
+      doc.artigos,
+      artId,
+      reorderedIds
+    );
+    if (nextArtigos !== doc.artigos) updateField('artigos', nextArtigos);
+  };
+
+  const handleMoveParagrafoInciso = (
+    artId: string,
+    parId: string,
+    incisoIndex: number,
+    direction: ReorderDirection
+  ) => {
+    updateField(
+      'artigos',
+      moveParagrafoIncisoInArtigos(
+        doc.artigos,
+        artId,
+        parId,
+        incisoIndex,
+        direction
+      )
+    );
+  };
+
+  const handleReorderParagrafoIncisos = (
+    artId: string,
+    parId: string,
+    reorderedIds: string[]
+  ) => {
+    const nextArtigos = reorderParagrafoIncisosInArtigos(
+      doc.artigos,
+      artId,
+      parId,
+      reorderedIds
+    );
+    if (nextArtigos !== doc.artigos) updateField('artigos', nextArtigos);
+  };
+
+  const handleMoveParagrafoAlinea = (
+    artId: string,
+    parId: string,
+    incId: string,
+    alineaIndex: number,
+    direction: ReorderDirection
+  ) => {
+    updateField(
+      'artigos',
+      moveParagrafoAlineaInArtigos(
+        doc.artigos,
+        artId,
+        parId,
+        incId,
+        alineaIndex,
+        direction
+      )
+    );
+  };
+
+  const handleReorderParagrafoAlineas = (
+    artId: string,
+    parId: string,
+    incId: string,
+    reorderedIds: string[]
+  ) => {
+    const nextArtigos = reorderParagrafoAlineasInArtigos(
+      doc.artigos,
+      artId,
+      parId,
+      incId,
+      reorderedIds
+    );
+    if (nextArtigos !== doc.artigos) updateField('artigos', nextArtigos);
+  };
+
+  const handleMoveRevogacao = (
+    revIndex: number,
+    direction: ReorderDirection
+  ) => {
+    updateField('revogacoes', moveArrayItem(doc.revogacoes, revIndex, direction));
+  };
+
+  const renderReorderStepper = ({
+    canUp,
+    canDown,
+    onUp,
+    onDown,
+    upLabel,
+    downLabel,
+    groupLabel,
+    compact = false,
+  }: {
+    canUp: boolean;
+    canDown: boolean;
+    onUp: () => void;
+    onDown: () => void;
+    upLabel: string;
+    downLabel: string;
+    groupLabel: string;
+    compact?: boolean;
+  }) => (
+    <div
+      className="inline-flex items-center border border-slate-200 rounded bg-white overflow-hidden shrink-0"
+      role="group"
+      aria-label={groupLabel}
+    >
+      <button
+        type="button"
+        onClick={onUp}
+        disabled={!canUp}
+        title={upLabel}
+        aria-label={upLabel}
+        className={`${
+          compact ? 'p-1' : 'p-1.5'
+        } text-slate-600 hover:text-slate-900 hover:bg-slate-100 disabled:opacity-30 disabled:pointer-events-none transition-colors`}
+      >
+        <ArrowUp className="w-3.5 h-3.5" />
+      </button>
+      <span className="w-px h-3.5 bg-slate-200" aria-hidden="true" />
+      <button
+        type="button"
+        onClick={onDown}
+        disabled={!canDown}
+        title={downLabel}
+        aria-label={downLabel}
+        className={`${
+          compact ? 'p-1' : 'p-1.5'
+        } text-slate-600 hover:text-slate-900 hover:bg-slate-100 disabled:opacity-30 disabled:pointer-events-none transition-colors`}
+      >
+        <ArrowDown className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+
   const handleCopy = async () => {
     await navigator.clipboard.writeText(plainText);
     setCopied(true);
@@ -1552,6 +1966,13 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
     setRightPaneMode('checklist');
   };
 
+  const handleOpenIndice = () => {
+    if (layoutMode === 'editor') {
+      setLayoutMode('dividido');
+    }
+    setRightPaneMode('indice');
+  };
+
   const handleOpenRevisor = () => {
     if (layoutMode === 'editor') {
       setLayoutMode('dividido');
@@ -1811,7 +2232,8 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                 {savingNow || cloudSyncStatus === 'saving'
                   ? 'Salvando...'
                   : saveFeedback === 'saved'
-                    ? cloudSyncStatus === 'error'
+                    ? cloudSyncStatus === 'error' ||
+                      cloudSyncStatus === 'offline'
                       ? 'Salvo localmente'
                       : 'Minuta salva'
                     : 'Salvar minuta'}
@@ -2031,6 +2453,22 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
             <span aria-hidden="true">·</span>
             <button
               type="button"
+              onClick={handleOpenIndice}
+              title="Gerar e consultar Índice Remissivo automático por assunto e artigo"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-colors whitespace-nowrap shrink-0 ${
+                rightPaneMode === 'indice'
+                  ? 'bg-slate-900 border-slate-900 text-white font-medium'
+                  : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50 font-medium'
+              }`}
+            >
+              <BookOpen className="w-3.5 h-3.5 shrink-0" />
+              <span className="tabular-nums">
+                Índice ({indiceRemissivo.totalAssuntos})
+              </span>
+            </button>
+            <span aria-hidden="true">·</span>
+            <button
+              type="button"
               onClick={handleOpenHistorico}
               title="Abrir histórico de revisões, comparador de versões e caixa de observações"
               className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-colors whitespace-nowrap ${
@@ -2047,14 +2485,19 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
           </div>
         </div>
 
-        {cloudSyncStatus === 'error' && cloudSyncError && (
-          <div className="p-3 bg-amber-50 border border-amber-200 rounded-md flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs text-amber-950 leading-relaxed">
-            <div>
-              <strong>Salvamento local ativo (nuvem pausada):</strong>{' '}
-              {cloudSyncError} Enquanto isso, você pode continuar editando,
-              exportar ou salvar uma cópia no Google Drive com pasta para
-              imagens.
-            </div>
+        {(cloudSyncStatus === 'error' || cloudSyncStatus === 'offline') &&
+          cloudSyncError && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-md flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs text-amber-950 leading-relaxed">
+              <div>
+                <strong>
+                  {cloudSyncStatus === 'offline'
+                    ? 'Salvamento local ativo (aguardando internet):'
+                    : 'Salvamento local ativo (sincronização automática pendente):'}
+                </strong>{' '}
+                {cloudSyncError} Enquanto isso, você pode continuar editando,
+                exportar ou salvar uma cópia no Google Drive com pasta para
+                imagens.
+              </div>
             <button
               type="button"
               onClick={handleOpenDriveCopyModal}
@@ -2594,12 +3037,56 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               </div>
 
               <div data-review-field="ementa" className="space-y-1.5">
-                <label className="block text-xs font-medium text-slate-700">
-                  {isTech
-                    ? 'Objetivo / Escopo (ABNT NBR 6024)'
-                    : 'Ementa (Resumo objetivo do conteúdo — Art. 5º da LC 95/98)'}
-                  {renderRequirementTag('ementa')}
-                </label>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="block text-xs font-medium text-slate-700">
+                    {isTech
+                      ? 'Objetivo / Escopo (ABNT NBR 6024)'
+                      : 'Ementa (Resumo objetivo do conteúdo — Art. 5º da LC 95/98)'}
+                    {renderRequirementTag('ementa')}
+                  </label>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] text-slate-500">
+                      Modelo:{' '}
+                      <span className="font-medium text-slate-700">
+                        {getAiModelSpec(aiModelEmenta).nome}
+                      </span>
+                      {onOpenAccountAiSettings && (
+                        <>
+                          {' · '}
+                          <button
+                            type="button"
+                            onClick={onOpenAccountAiSettings}
+                            className="underline hover:text-slate-900"
+                          >
+                            Alterar
+                          </button>
+                        </>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void handleGenerateEmentaSuggestion()}
+                      disabled={ementaAiLoading || !canSuggestEmenta}
+                      title={
+                        !canSuggestEmenta
+                          ? `Preencha ao menos um ${isTech ? 'item operacional' : 'artigo'} para analisar o texto da norma`
+                          : isTech
+                            ? 'Analisar os itens da norma e sugerir Objetivo / Escopo com IA'
+                            : 'Analisar os artigos da norma e sugerir ementa conforme a LC nº 95/1998'
+                      }
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-md transition-colors whitespace-nowrap shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {ementaAiLoading ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-700" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5 text-slate-700" />
+                      )}
+                      {ementaAiLoading
+                        ? 'Analisando artigos...'
+                        : 'Sugerir ementa com IA'}
+                    </button>
+                  </div>
+                </div>
                 <ReviewedTextarea
                   rows={2}
                   value={doc.ementa}
@@ -2615,6 +3102,138 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                   onAddToDictionary={addToDictionary}
                   {...nativeFieldProps}
                 />
+
+                {ementaAiError && (
+                  <div className="flex items-start justify-between gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                    <div className="flex items-start gap-2 min-w-0">
+                      <AlertTriangle className="w-3.5 h-3.5 text-red-600 shrink-0 mt-0.5" />
+                      <span>{ementaAiError}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setEmentaAiError(null)}
+                      aria-label="Fechar aviso"
+                      className="text-red-500 hover:text-red-800 p-0.5 shrink-0"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
+                {ementaAiSuggestion && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3.5 space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-900">
+                        <Sparkles className="w-3.5 h-3.5 text-slate-700 shrink-0" />
+                        <span>
+                          {isTech
+                            ? 'Sugestão de Objetivo / Escopo (ABNT NBR 6024)'
+                            : 'Sugestão de Ementa conforme a LC nº 95/1998'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void handleGenerateEmentaSuggestion()}
+                          disabled={ementaAiLoading}
+                          className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          Gerar novamente
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEmentaAiSuggestion(null)}
+                          aria-label="Fechar sugestão"
+                          className="p-1 text-slate-500 hover:text-slate-900 rounded transition-colors shrink-0"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2.5">
+                      <p className="text-sm text-slate-900 leading-relaxed font-medium">
+                        {ementaAiSuggestion.ementaSugerida}
+                      </p>
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100">
+                        <span className="text-[11px] text-slate-500">
+                          Baseada em {doc.artigos.length}{' '}
+                          {isTech
+                            ? doc.artigos.length === 1
+                              ? 'item operacional'
+                              : 'itens operacionais'
+                            : doc.artigos.length === 1
+                              ? 'artigo analisado'
+                              : 'artigos analisados'}
+                          {ementaAiSuggestion.modeloUtilizado
+                            ? ` · ${ementaAiSuggestion.modeloUtilizado}`
+                            : ''}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleApplyEmentaSuggestion(
+                              ementaAiSuggestion.ementaSugerida
+                            )
+                          }
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          Aplicar esta ementa
+                        </button>
+                      </div>
+                    </div>
+
+                    {ementaAiSuggestion.alternativas.length > 0 && (
+                      <div className="space-y-1.5">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                          Variações alternativas (clique para aplicar)
+                        </div>
+                        <div className="space-y-1.5">
+                          {ementaAiSuggestion.alternativas.map((alt, altIdx) => (
+                            <button
+                              key={`${altIdx}-${alt.slice(0, 20)}`}
+                              type="button"
+                              onClick={() => handleApplyEmentaSuggestion(alt)}
+                              className="w-full text-left flex items-start justify-between gap-2 rounded-md border border-slate-200 bg-white hover:border-slate-400 hover:bg-slate-100/60 px-2.5 py-2 text-xs text-slate-800 transition-colors"
+                            >
+                              <span className="leading-relaxed">{alt}</span>
+                              <span className="text-[11px] font-medium text-slate-700 whitespace-nowrap shrink-0 mt-0.5">
+                                Aplicar
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {ementaAiSuggestion.objetosIdentificados.length > 0 && (
+                      <div className="space-y-1">
+                        <div className="text-[11px] font-medium text-slate-600">
+                          Núcleos identificados na norma:
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {ementaAiSuggestion.objetosIdentificados.map((obj, idx) => (
+                            <span
+                              key={`${idx}-${obj}`}
+                              className="inline-block px-2 py-0.5 text-[11px] text-slate-700 bg-white border border-slate-200 rounded"
+                            >
+                              {obj}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {ementaAiSuggestion.observacaoLegistica && (
+                      <p className="text-[11px] text-slate-600 leading-relaxed border-t border-slate-200 pt-2">
+                        {ementaAiSuggestion.observacaoLegistica}
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 {renderFieldValidationAlerts('ementa')}
                 {showInlineHints && (
                   <FieldReviewHints
@@ -2809,44 +3428,15 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
               </div>
 
               {!collapsedSections.normativa && (
+              <MotionConfig reducedMotion="user">
               <div className="space-y-5">
                 {renderFieldValidationAlerts('artigos')}
-                {divisionGroups.map((group) => {
-                  const isCollapsed =
-                    hasDivisionsInDoc && Boolean(collapsedTitulos[group.key]);
-                  const getItemDisplayLabel = (globalIdx: number, sufixo?: string) =>
-                    progressiveLayout?.[globalIdx]
-                      ? progressiveLayout[globalIdx].itemLabel.replace(/\.$/, '')
-                      : formatArtigoNumero(globalIdx + 1, sufixo).replace(/\.$/, '');
-                  const firstArtNum = getItemDisplayLabel(
-                    group.items[0].globalIndex,
-                    group.items[0].art.sufixo
-                  );
-                  const lastItem = group.items[group.items.length - 1];
-                  const lastArtNum = getItemDisplayLabel(
-                    lastItem.globalIndex,
-                    lastItem.art.sufixo
-                  );
-                  const rangeLabel =
-                    group.items.length === 1
-                      ? isTech
-                        ? `Item ${firstArtNum}`
-                        : firstArtNum
-                      : isTech
-                        ? `Itens ${firstArtNum} a ${lastArtNum}`
-                        : `${firstArtNum} a ${lastArtNum}`;
-                  const groupFindingsCount = group.items.reduce((acc, it) => {
-                    const artId = it.art.id;
-                    const artFindings = review.findings.filter((f) =>
-                      f.fieldKey.includes(`:${artId}`)
-                    );
-                    return acc + artFindings.length;
-                  }, 0);
-
+                {(() => {
                   const renderArtigoCard = (
                     art: ArtigoItem,
                     aIdx: number,
-                    localIdx: number
+                    localIdx: number,
+                    groupLength: number
                   ) => {
                     const progLayout = progressiveLayout?.[aIdx] || null;
                     const artLabel = progLayout
@@ -2914,12 +3504,29 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                         ];
 
                     return (
-                      <div
+                      <SortableNormaItem
                         key={art.id}
-                        className={localIdx > 0 ? 'pt-6 space-y-3' : 'space-y-3'}
+                        value={art.id}
+                        canDrag={groupLength > 1}
+                        className={
+                          localIdx > 0
+                            ? 'pt-5 border-t border-slate-200 space-y-3 bg-white'
+                            : 'space-y-3 bg-white'
+                        }
+                        draggingClassName="rounded-lg ring-1 ring-slate-300 bg-white px-3 py-3"
                       >
+                        {({ isDragging, startDrag }) => (
+                          <>
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex flex-wrap items-center gap-2 min-w-0">
+                          {groupLength > 1 && (
+                            <SortableDragHandleButton
+                              onPointerDown={startDrag}
+                              isDragging={isDragging}
+                              compact
+                              label={`Arrastar para reordenar ${artLabel.replace(/\.$/, '')}`}
+                            />
+                          )}
                           <span className="font-mono text-xs font-semibold tabular-nums text-slate-900 whitespace-nowrap shrink-0 mr-1">
                             {artLabel}
                           </span>
@@ -2969,15 +3576,28 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                           )}
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => removeArtigo(art.id)}
-                          disabled={doc.artigos.length <= 1}
-                          aria-label={`Remover ${artLabel}`}
-                          className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30 transition-colors shrink-0"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {doc.artigos.length > 1 &&
+                            renderReorderStepper({
+                              canUp: aIdx > 0,
+                              canDown: aIdx < doc.artigos.length - 1,
+                              onUp: () => handleMoveArtigo(aIdx, 'up'),
+                              onDown: () => handleMoveArtigo(aIdx, 'down'),
+                              upLabel: `Subir ${artLabel.replace(/\.$/, '')}`,
+                              downLabel: `Descer ${artLabel.replace(/\.$/, '')}`,
+                              groupLabel: `Reordenar ${artLabel.replace(/\.$/, '')}`,
+                              compact: true,
+                            })}
+                          <button
+                            type="button"
+                            onClick={() => removeArtigo(art.id)}
+                            disabled={doc.artigos.length <= 1}
+                            aria-label={`Remover ${artLabel}`}
+                            className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30 transition-colors shrink-0"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
 
                       {/* Divisões hierárquicas (Título > Capítulo > Seção > Subseção) */}
@@ -3017,6 +3637,41 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                                     {...nativeFieldProps}
                                     className="text-xs font-medium bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5 text-slate-800 flex-1 min-w-0 focus:outline-none focus:ring-1 focus:ring-slate-900"
                                   />
+                                  {div.kind !== activeDivisionKind &&
+                                    (() => {
+                                      const subCaps =
+                                        getSubdivisionMoveCapabilities(
+                                          doc.artigos,
+                                          art.id,
+                                          div.kind
+                                        );
+                                      if (
+                                        !subCaps.canMoveUp &&
+                                        !subCaps.canMoveDown
+                                      ) {
+                                        return null;
+                                      }
+                                      return renderReorderStepper({
+                                        canUp: subCaps.canMoveUp,
+                                        canDown: subCaps.canMoveDown,
+                                        onUp: () =>
+                                          handleMoveSubdivisionBlock(
+                                            art.id,
+                                            div.kind,
+                                            'up'
+                                          ),
+                                        onDown: () =>
+                                          handleMoveSubdivisionBlock(
+                                            art.id,
+                                            div.kind,
+                                            'down'
+                                          ),
+                                        upLabel: `Subir ${div.label} inteiro (com seus dispositivos)`,
+                                        downLabel: `Descer ${div.label} inteiro (com seus dispositivos)`,
+                                        groupLabel: `Reordenar ${div.label}`,
+                                        compact: true,
+                                      });
+                                    })()}
                                   <button
                                     type="button"
                                     onClick={() =>
@@ -3078,14 +3733,40 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
 
                       {/* Incisos / Alíneas */}
                       {art.incisos.length > 0 && (
-                        <div className="pl-3 sm:pl-4 space-y-3 border-l border-slate-200">
+                        <SortableNormaGroup
+                          values={art.incisos.map((i) => i.id)}
+                          onReorder={(ids) => handleReorderIncisos(art.id, ids)}
+                          className="pl-3 sm:pl-4 space-y-3 border-l border-slate-200"
+                        >
                           {art.incisos.map((inc, iIdx) => (
-                            <div key={inc.id} className="space-y-2">
+                            <SortableNormaItem
+                              key={inc.id}
+                              value={inc.id}
+                              canDrag={art.incisos.length > 1}
+                              className="space-y-2 bg-white"
+                              draggingClassName="rounded-md ring-1 ring-slate-300 bg-white px-2 py-1.5"
+                            >
+                              {({ isDragging: isIncDragging, startDrag: startIncDrag }) => (
+                                <>
                               <div
                                 data-review-field={`inciso:${art.id}:${inc.id}`}
                                 className="space-y-1.5"
                               >
                                 <div className="flex items-start gap-2">
+                                  {art.incisos.length > 1 && (
+                                    <div className="pt-1">
+                                      <SortableDragHandleButton
+                                        onPointerDown={startIncDrag}
+                                        isDragging={isIncDragging}
+                                        compact
+                                        label={
+                                          isTech
+                                            ? `Arrastar alínea ${toLetter(iIdx)})`
+                                            : `Arrastar inciso ${toRoman(iIdx + 1)}`
+                                        }
+                                      />
+                                    </div>
+                                  )}
                                   <span className="font-mono text-xs font-medium text-slate-600 pt-2 min-w-10 whitespace-nowrap shrink-0">
                                     {isTech
                                       ? `${toLetter(iIdx)})`
@@ -3119,6 +3800,25 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                                     textStyleClassName="text-sm text-slate-900 leading-relaxed px-3 py-1.5"
                                     {...nativeFieldProps}
                                   />
+                                  {art.incisos.length > 1 &&
+                                    renderReorderStepper({
+                                      canUp: iIdx > 0,
+                                      canDown: iIdx < art.incisos.length - 1,
+                                      onUp: () =>
+                                        handleMoveInciso(art.id, iIdx, 'up'),
+                                      onDown: () =>
+                                        handleMoveInciso(art.id, iIdx, 'down'),
+                                      upLabel: isTech
+                                        ? `Subir alínea ${toLetter(iIdx)})`
+                                        : `Subir inciso ${toRoman(iIdx + 1)}`,
+                                      downLabel: isTech
+                                        ? `Descer alínea ${toLetter(iIdx)})`
+                                        : `Descer inciso ${toRoman(iIdx + 1)}`,
+                                      groupLabel: isTech
+                                        ? 'Reordenar alínea'
+                                        : 'Reordenar inciso',
+                                      compact: true,
+                                    })}
                                   <button
                                     type="button"
                                     onClick={() => addAlinea(art.id, inc.id)}
@@ -3151,94 +3851,183 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                               </div>
 
                               {inc.alineas.length > 0 && (
-                                <div className="pl-10 space-y-1.5">
+                                <SortableNormaGroup
+                                  values={inc.alineas.map((a) => a.id)}
+                                  onReorder={(ids) =>
+                                    handleReorderAlineas(art.id, inc.id, ids)
+                                  }
+                                  className="pl-10 space-y-1.5"
+                                >
                                   {inc.alineas.map((al, alIdx) => (
-                                    <div
+                                    <SortableNormaItem
                                       key={al.id}
-                                      data-review-field={`alinea:${art.id}:${inc.id}:${al.id}`}
-                                      className="space-y-1"
+                                      value={al.id}
+                                      canDrag={inc.alineas.length > 1}
+                                      className="space-y-1 bg-white"
+                                      draggingClassName="rounded ring-1 ring-slate-300 bg-white px-2 py-1"
                                     >
-                                      <div className="flex items-start gap-2">
-                                        <span className="font-mono text-xs text-slate-500 pt-1.5 w-6 whitespace-nowrap shrink-0">
-                                          {toLetter(alIdx)})
-                                        </span>
-                                        <ReviewedTextarea
-                                          rows={1}
-                                          value={al.texto}
-                                          onChange={(e) =>
-                                            updateAlinea(
-                                              art.id,
-                                              inc.id,
-                                              al.id,
-                                              e.target.value
-                                            )
-                                          }
-                                          placeholder="Texto da alínea..."
-                                          findings={
-                                            review.byField[
-                                              `alinea:${art.id}:${inc.id}:${al.id}`
-                                            ] || []
-                                          }
-                                          highlightEnabled={highlightReview}
-                                          {...getFieldMarkProps(
-                                            `alinea:${art.id}:${inc.id}:${al.id}`,
-                                            `${artLabel.replace(/\.$/, '')}, inc. ${toRoman(iIdx + 1)}, alínea "${toLetter(alIdx)}"`
-                                          )}
-                                          onApplyFix={handleApplyReviewFix}
-                                          onIgnoreFinding={handleIgnoreFinding}
-                                          onAddToDictionary={addToDictionary}
-                                          wrapperClassName="flex-1 min-w-0"
-                                          textStyleClassName="text-xs text-slate-900 leading-relaxed px-2.5 py-1.5"
-                                          {...nativeFieldProps}
-                                        />
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            removeAlinea(art.id, inc.id, al.id)
-                                          }
-                                          aria-label="Remover alínea"
-                                          className="p-1 text-slate-400 hover:text-red-600 shrink-0"
+                                      {({
+                                        isDragging: isAlDragging,
+                                        startDrag: startAlDrag,
+                                      }) => (
+                                        <div
+                                          data-review-field={`alinea:${art.id}:${inc.id}:${al.id}`}
+                                          className="space-y-1"
                                         >
-                                          <Trash2 className="w-3.5 h-3.5" />
-                                        </button>
-                                      </div>
-                                      {showInlineHints && (
-                                        <div className="pl-8">
-                                          <FieldReviewHints
-                                            findings={
-                                              review.byField[
-                                                `alinea:${art.id}:${inc.id}:${al.id}`
-                                              ] || []
-                                            }
-                                            onApplyFix={handleApplyReviewFix}
-                                            onIgnore={handleIgnoreFinding}
-                                          />
+                                          <div className="flex items-start gap-2">
+                                            {inc.alineas.length > 1 && (
+                                              <div className="pt-0.5">
+                                                <SortableDragHandleButton
+                                                  onPointerDown={startAlDrag}
+                                                  isDragging={isAlDragging}
+                                                  compact
+                                                  label={`Arrastar alínea ${toLetter(alIdx)})`}
+                                                />
+                                              </div>
+                                            )}
+                                            <span className="font-mono text-xs text-slate-500 pt-1.5 w-6 whitespace-nowrap shrink-0">
+                                              {toLetter(alIdx)})
+                                            </span>
+                                            <ReviewedTextarea
+                                              rows={1}
+                                              value={al.texto}
+                                              onChange={(e) =>
+                                                updateAlinea(
+                                                  art.id,
+                                                  inc.id,
+                                                  al.id,
+                                                  e.target.value
+                                                )
+                                              }
+                                              placeholder="Texto da alínea..."
+                                              findings={
+                                                review.byField[
+                                                  `alinea:${art.id}:${inc.id}:${al.id}`
+                                                ] || []
+                                              }
+                                              highlightEnabled={highlightReview}
+                                              {...getFieldMarkProps(
+                                                `alinea:${art.id}:${inc.id}:${al.id}`,
+                                                `${artLabel.replace(/\.$/, '')}, inc. ${toRoman(iIdx + 1)}, alínea "${toLetter(alIdx)}"`
+                                              )}
+                                              onApplyFix={handleApplyReviewFix}
+                                              onIgnoreFinding={handleIgnoreFinding}
+                                              onAddToDictionary={addToDictionary}
+                                              wrapperClassName="flex-1 min-w-0"
+                                              textStyleClassName="text-xs text-slate-900 leading-relaxed px-2.5 py-1.5"
+                                              {...nativeFieldProps}
+                                            />
+                                            {inc.alineas.length > 1 &&
+                                              renderReorderStepper({
+                                                canUp: alIdx > 0,
+                                                canDown:
+                                                  alIdx <
+                                                  inc.alineas.length - 1,
+                                                onUp: () =>
+                                                  handleMoveAlinea(
+                                                    art.id,
+                                                    inc.id,
+                                                    alIdx,
+                                                    'up'
+                                                  ),
+                                                onDown: () =>
+                                                  handleMoveAlinea(
+                                                    art.id,
+                                                    inc.id,
+                                                    alIdx,
+                                                    'down'
+                                                  ),
+                                                upLabel: `Subir alínea ${toLetter(alIdx)})`,
+                                                downLabel: `Descer alínea ${toLetter(alIdx)})`,
+                                                groupLabel: 'Reordenar alínea',
+                                                compact: true,
+                                              })}
+                                            <button
+                                              type="button"
+                                              onClick={() =>
+                                                removeAlinea(
+                                                  art.id,
+                                                  inc.id,
+                                                  al.id
+                                                )
+                                              }
+                                              aria-label="Remover alínea"
+                                              className="p-1 text-slate-400 hover:text-red-600 shrink-0"
+                                            >
+                                              <Trash2 className="w-3.5 h-3.5" />
+                                            </button>
+                                          </div>
+                                          {showInlineHints && (
+                                            <div className="pl-8">
+                                              <FieldReviewHints
+                                                findings={
+                                                  review.byField[
+                                                    `alinea:${art.id}:${inc.id}:${al.id}`
+                                                  ] || []
+                                                }
+                                                onApplyFix={
+                                                  handleApplyReviewFix
+                                                }
+                                                onIgnore={handleIgnoreFinding}
+                                              />
+                                            </div>
+                                          )}
                                         </div>
                                       )}
-                                    </div>
+                                    </SortableNormaItem>
                                   ))}
-                                </div>
+                                </SortableNormaGroup>
                               )}
-                            </div>
+                                </>
+                              )}
+                            </SortableNormaItem>
                           ))}
-                        </div>
+                        </SortableNormaGroup>
                       )}
 
                       {/* Parágrafos */}
                       {art.paragrafos.length > 0 && (
-                        <div className="pl-3 sm:pl-4 space-y-3 border-l border-slate-200">
+                        <SortableNormaGroup
+                          values={art.paragrafos.map((p) => p.id)}
+                          onReorder={(ids) =>
+                            handleReorderParagrafos(art.id, ids)
+                          }
+                          className="pl-3 sm:pl-4 space-y-3 border-l border-slate-200"
+                        >
                           {art.paragrafos.map((par, pIdx) => {
                             const parIncisos = par.incisos || [];
                             return (
-                              <div
+                              <SortableNormaItem
                                 key={par.id}
-                                className="space-y-2"
+                                value={par.id}
+                                canDrag={art.paragrafos.length > 1}
+                                className="space-y-2 bg-white"
+                                draggingClassName="rounded-md ring-1 ring-slate-300 bg-white px-2 py-1.5"
                               >
+                                {({
+                                  isDragging: isParDragging,
+                                  startDrag: startParDrag,
+                                }) => (
+                                  <>
                                 <div
                                   data-review-field={`paragrafo:${art.id}:${par.id}`}
                                   className="space-y-1.5"
                                 >
                                   <div className="flex items-start gap-2">
+                                    {art.paragrafos.length > 1 && (
+                                      <div className="pt-1">
+                                        <SortableDragHandleButton
+                                          onPointerDown={startParDrag}
+                                          isDragging={isParDragging}
+                                          compact
+                                          label={
+                                            isTech
+                                              ? 'Arrastar subitem'
+                                              : 'Arrastar parágrafo'
+                                          }
+                                        />
+                                      </div>
+                                    )}
                                     <span className="font-mono text-xs font-medium text-slate-600 pt-2 w-28 whitespace-nowrap shrink-0">
                                       {isTech
                                         ? progLayout?.subItemLabels[pIdx] ||
@@ -3290,6 +4079,33 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                                       textStyleClassName="text-sm text-slate-900 leading-relaxed px-3 py-1.5"
                                       {...nativeFieldProps}
                                     />
+                                    {art.paragrafos.length > 1 &&
+                                      renderReorderStepper({
+                                        canUp: pIdx > 0,
+                                        canDown: pIdx < art.paragrafos.length - 1,
+                                        onUp: () =>
+                                          handleMoveParagrafo(
+                                            art.id,
+                                            pIdx,
+                                            'up'
+                                          ),
+                                        onDown: () =>
+                                          handleMoveParagrafo(
+                                            art.id,
+                                            pIdx,
+                                            'down'
+                                          ),
+                                        upLabel: isTech
+                                          ? 'Subir subitem'
+                                          : 'Subir parágrafo',
+                                        downLabel: isTech
+                                          ? 'Descer subitem'
+                                          : 'Descer parágrafo',
+                                        groupLabel: isTech
+                                          ? 'Reordenar subitem'
+                                          : 'Reordenar parágrafo',
+                                        compact: true,
+                                      })}
                                     <button
                                       type="button"
                                       onClick={() =>
@@ -3332,14 +4148,45 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
 
                                 {/* Incisos vinculados a este parágrafo */}
                                 {parIncisos.length > 0 && (
-                                  <div className="pl-6 sm:pl-8 space-y-2.5 border-l border-slate-200">
+                                  <SortableNormaGroup
+                                    values={parIncisos.map((i) => i.id)}
+                                    onReorder={(ids) =>
+                                      handleReorderParagrafoIncisos(
+                                        art.id,
+                                        par.id,
+                                        ids
+                                      )
+                                    }
+                                    className="pl-6 sm:pl-8 space-y-2.5 border-l border-slate-200"
+                                  >
                                     {parIncisos.map((inc, iIdx) => (
-                                      <div key={inc.id} className="space-y-2">
+                                      <SortableNormaItem
+                                        key={inc.id}
+                                        value={inc.id}
+                                        canDrag={parIncisos.length > 1}
+                                        className="space-y-2 bg-white"
+                                        draggingClassName="rounded-md ring-1 ring-slate-300 bg-white px-2 py-1.5"
+                                      >
+                                        {({
+                                          isDragging: isParIncDragging,
+                                          startDrag: startParIncDrag,
+                                        }) => (
+                                          <>
                                         <div
                                           data-review-field={`par_inciso:${art.id}:${par.id}:${inc.id}`}
                                           className="space-y-1.5"
                                         >
                                           <div className="flex items-start gap-2">
+                                            {parIncisos.length > 1 && (
+                                              <div className="pt-1">
+                                                <SortableDragHandleButton
+                                                  onPointerDown={startParIncDrag}
+                                                  isDragging={isParIncDragging}
+                                                  compact
+                                                  label={`Arrastar inciso ${toRoman(iIdx + 1)}`}
+                                                />
+                                              </div>
+                                            )}
                                             <span className="font-mono text-xs font-medium text-slate-600 pt-2 min-w-10 whitespace-nowrap shrink-0">
                                               {toRoman(iIdx + 1)} -
                                             </span>
@@ -3376,6 +4223,31 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                                               textStyleClassName="text-sm text-slate-900 leading-relaxed px-3 py-1.5"
                                               {...nativeFieldProps}
                                             />
+                                            {parIncisos.length > 1 &&
+                                              renderReorderStepper({
+                                                canUp: iIdx > 0,
+                                                canDown:
+                                                  iIdx < parIncisos.length - 1,
+                                                onUp: () =>
+                                                  handleMoveParagrafoInciso(
+                                                    art.id,
+                                                    par.id,
+                                                    iIdx,
+                                                    'up'
+                                                  ),
+                                                onDown: () =>
+                                                  handleMoveParagrafoInciso(
+                                                    art.id,
+                                                    par.id,
+                                                    iIdx,
+                                                    'down'
+                                                  ),
+                                                upLabel: `Subir inciso ${toRoman(iIdx + 1)}`,
+                                                downLabel: `Descer inciso ${toRoman(iIdx + 1)}`,
+                                                groupLabel:
+                                                  'Reordenar inciso do parágrafo',
+                                                compact: true,
+                                              })}
                                             <button
                                               type="button"
                                               onClick={() =>
@@ -3420,96 +4292,174 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                                         </div>
 
                                         {inc.alineas.length > 0 && (
-                                          <div className="pl-10 space-y-1.5">
+                                          <SortableNormaGroup
+                                            values={inc.alineas.map((a) => a.id)}
+                                            onReorder={(ids) =>
+                                              handleReorderParagrafoAlineas(
+                                                art.id,
+                                                par.id,
+                                                inc.id,
+                                                ids
+                                              )
+                                            }
+                                            className="pl-10 space-y-1.5"
+                                          >
                                             {inc.alineas.map((al, alIdx) => (
-                                              <div
+                                              <SortableNormaItem
                                                 key={al.id}
-                                                data-review-field={`par_alinea:${art.id}:${par.id}:${inc.id}:${al.id}`}
-                                                className="space-y-1"
+                                                value={al.id}
+                                                canDrag={inc.alineas.length > 1}
+                                                className="space-y-1 bg-white"
+                                                draggingClassName="rounded ring-1 ring-slate-300 bg-white px-2 py-1"
                                               >
-                                                <div className="flex items-start gap-2">
-                                                  <span className="font-mono text-xs text-slate-500 pt-1.5 w-6 whitespace-nowrap shrink-0">
-                                                    {toLetter(alIdx)})
-                                                  </span>
-                                                  <ReviewedTextarea
-                                                    rows={1}
-                                                    value={al.texto}
-                                                    onChange={(e) =>
-                                                      updateParagrafoAlinea(
-                                                        art.id,
-                                                        par.id,
-                                                        inc.id,
-                                                        al.id,
-                                                        e.target.value
-                                                      )
-                                                    }
-                                                    placeholder="Texto da alínea..."
-                                                    findings={
-                                                      review.byField[
-                                                        `par_alinea:${art.id}:${par.id}:${inc.id}:${al.id}`
-                                                      ] || []
-                                                    }
-                                                    highlightEnabled={highlightReview}
-                                                    {...getFieldMarkProps(
-                                                      `par_alinea:${art.id}:${par.id}:${inc.id}:${al.id}`,
-                                                      `${artLabel.replace(/\.$/, '')}, ${formatParagrafoNumero(
-                                                        pIdx,
-                                                        art.paragrafos.length,
-                                                        par.sufixo
-                                                      ).replace(/\.$/, '')}, alínea "${toLetter(alIdx)}"`
-                                                    )}
-                                                    onApplyFix={handleApplyReviewFix}
-                                                    onIgnoreFinding={handleIgnoreFinding}
-                                                    onAddToDictionary={addToDictionary}
-                                                    wrapperClassName="flex-1 min-w-0"
-                                                    textStyleClassName="text-xs text-slate-900 leading-relaxed px-2.5 py-1.5"
-                                                    {...nativeFieldProps}
-                                                  />
-                                                  <button
-                                                    type="button"
-                                                    onClick={() =>
-                                                      removeParagrafoAlinea(
-                                                        art.id,
-                                                        par.id,
-                                                        inc.id,
-                                                        al.id
-                                                      )
-                                                    }
-                                                    aria-label="Remover alínea do parágrafo"
-                                                    className="p-1 text-slate-400 hover:text-red-600 shrink-0"
+                                                {({
+                                                  isDragging: isParAlDragging,
+                                                  startDrag: startParAlDrag,
+                                                }) => (
+                                                  <div
+                                                    data-review-field={`par_alinea:${art.id}:${par.id}:${inc.id}:${al.id}`}
+                                                    className="space-y-1"
                                                   >
-                                                    <Trash2 className="w-3.5 h-3.5" />
-                                                  </button>
-                                                </div>
-                                                {showInlineHints && (
-                                                  <div className="pl-8">
-                                                    <FieldReviewHints
-                                                      findings={
-                                                        review.byField[
-                                                          `par_alinea:${art.id}:${par.id}:${inc.id}:${al.id}`
-                                                        ] || []
-                                                      }
-                                                      onApplyFix={
-                                                        handleApplyReviewFix
-                                                      }
-                                                      onIgnore={
-                                                        handleIgnoreFinding
-                                                      }
-                                                    />
+                                                    <div className="flex items-start gap-2">
+                                                      {inc.alineas.length > 1 && (
+                                                        <div className="pt-0.5">
+                                                          <SortableDragHandleButton
+                                                            onPointerDown={
+                                                              startParAlDrag
+                                                            }
+                                                            isDragging={
+                                                              isParAlDragging
+                                                            }
+                                                            compact
+                                                            label={`Arrastar alínea ${toLetter(alIdx)})`}
+                                                          />
+                                                        </div>
+                                                      )}
+                                                      <span className="font-mono text-xs text-slate-500 pt-1.5 w-6 whitespace-nowrap shrink-0">
+                                                        {toLetter(alIdx)})
+                                                      </span>
+                                                      <ReviewedTextarea
+                                                        rows={1}
+                                                        value={al.texto}
+                                                        onChange={(e) =>
+                                                          updateParagrafoAlinea(
+                                                            art.id,
+                                                            par.id,
+                                                            inc.id,
+                                                            al.id,
+                                                            e.target.value
+                                                          )
+                                                        }
+                                                        placeholder="Texto da alínea..."
+                                                        findings={
+                                                          review.byField[
+                                                            `par_alinea:${art.id}:${par.id}:${inc.id}:${al.id}`
+                                                          ] || []
+                                                        }
+                                                        highlightEnabled={
+                                                          highlightReview
+                                                        }
+                                                        {...getFieldMarkProps(
+                                                          `par_alinea:${art.id}:${par.id}:${inc.id}:${al.id}`,
+                                                          `${artLabel.replace(/\.$/, '')}, ${formatParagrafoNumero(
+                                                            pIdx,
+                                                            art.paragrafos.length,
+                                                            par.sufixo
+                                                          ).replace(/\.$/, '')}, alínea "${toLetter(alIdx)}"`
+                                                        )}
+                                                        onApplyFix={
+                                                          handleApplyReviewFix
+                                                        }
+                                                        onIgnoreFinding={
+                                                          handleIgnoreFinding
+                                                        }
+                                                        onAddToDictionary={
+                                                          addToDictionary
+                                                        }
+                                                        wrapperClassName="flex-1 min-w-0"
+                                                        textStyleClassName="text-xs text-slate-900 leading-relaxed px-2.5 py-1.5"
+                                                        {...nativeFieldProps}
+                                                      />
+                                                      {inc.alineas.length > 1 &&
+                                                        renderReorderStepper({
+                                                          canUp: alIdx > 0,
+                                                          canDown:
+                                                            alIdx <
+                                                            inc.alineas.length -
+                                                              1,
+                                                          onUp: () =>
+                                                            handleMoveParagrafoAlinea(
+                                                              art.id,
+                                                              par.id,
+                                                              inc.id,
+                                                              alIdx,
+                                                              'up'
+                                                            ),
+                                                          onDown: () =>
+                                                            handleMoveParagrafoAlinea(
+                                                              art.id,
+                                                              par.id,
+                                                              inc.id,
+                                                              alIdx,
+                                                              'down'
+                                                            ),
+                                                          upLabel: `Subir alínea ${toLetter(alIdx)})`,
+                                                          downLabel: `Descer alínea ${toLetter(alIdx)})`,
+                                                          groupLabel:
+                                                            'Reordenar alínea do parágrafo',
+                                                          compact: true,
+                                                        })}
+                                                      <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                          removeParagrafoAlinea(
+                                                            art.id,
+                                                            par.id,
+                                                            inc.id,
+                                                            al.id
+                                                          )
+                                                        }
+                                                        aria-label="Remover alínea do parágrafo"
+                                                        className="p-1 text-slate-400 hover:text-red-600 shrink-0"
+                                                      >
+                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                      </button>
+                                                    </div>
+                                                    {showInlineHints && (
+                                                      <div className="pl-8">
+                                                        <FieldReviewHints
+                                                          findings={
+                                                            review.byField[
+                                                              `par_alinea:${art.id}:${par.id}:${inc.id}:${al.id}`
+                                                            ] || []
+                                                          }
+                                                          onApplyFix={
+                                                            handleApplyReviewFix
+                                                          }
+                                                          onIgnore={
+                                                            handleIgnoreFinding
+                                                          }
+                                                        />
+                                                      </div>
+                                                    )}
                                                   </div>
                                                 )}
-                                              </div>
+                                              </SortableNormaItem>
                                             ))}
-                                          </div>
+                                          </SortableNormaGroup>
                                         )}
-                                      </div>
+                                          </>
+                                        )}
+                                      </SortableNormaItem>
                                     ))}
-                                  </div>
+                                  </SortableNormaGroup>
                                 )}
-                              </div>
+                                  </>
+                                )}
+                              </SortableNormaItem>
                             );
                           })}
-                        </div>
+                        </SortableNormaGroup>
                       )}
 
                       <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
@@ -3554,119 +4504,394 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                           </button>
                         </div>
                       </div>
-                    </div>
-                  );
-                };
+                          </>
+                        )}
+                      </SortableNormaItem>
+                    );
+                  };
 
-                if (!hasDivisionsInDoc) {
-                  return (
-                    <div key={group.key} className="space-y-6 divide-y divide-slate-200">
-                      {group.items.map((item, localIdx) =>
-                        renderArtigoCard(item.art, item.globalIndex, localIdx)
-                      )}
-                    </div>
-                  );
-                }
-
-                const kindLabel = isTech
-                  ? 'Seção'
-                  : activeDivisionKind
-                    ? DIVISION_KIND_SINGULAR[activeDivisionKind]
-                    : 'Seção';
-
-                return (
-                  <div
-                    key={group.key}
-                    className="border border-slate-200 rounded-lg bg-white"
-                  >
-                    <div
-                      className={`bg-slate-50 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 ${
-                        isCollapsed
-                          ? 'rounded-lg'
-                          : 'rounded-t-lg border-b border-slate-200'
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => toggleDivisionGroup(group.key)}
-                        aria-expanded={!isCollapsed}
-                        className="flex items-center gap-2 text-left min-w-0 flex-1 group"
-                      >
-                        <span className="text-xs font-semibold text-slate-900 truncate group-hover:underline">
-                          {group.hasExplicitDivision
-                            ? group.divisionText.trim() ||
-                              `${kindLabel} sem denominação`
-                            : `Disposições Iniciais (sem ${kindLabel})`}
-                        </span>
-                        <span className="text-xs font-mono tabular-nums text-slate-500 whitespace-nowrap shrink-0">
-                          · {rangeLabel} ({group.items.length}{' '}
-                          {isTech
-                            ? group.items.length === 1
-                              ? 'item'
-                              : 'itens'
-                            : group.items.length === 1
-                              ? 'artigo'
-                              : 'artigos'}
+                  if (!hasDivisionsInDoc) {
+                    const flatGroup = divisionGroups[0];
+                    if (!flatGroup) return null;
+                    return (
+                      <SortableNormaGroup
+                        values={flatGroup.items.map((item) => item.art.id)}
+                        onReorder={(nextIds) =>
+                          handleReorderArtigosInGroup(
+                            flatGroup.startIndex,
+                            flatGroup.endIndex,
+                            nextIds
                           )
-                        </span>
-                        {isCollapsed && groupFindingsCount > 0 && (
-                          <span className="px-1.5 py-0.5 text-[11px] font-medium text-amber-800 bg-amber-100 border border-amber-200 rounded whitespace-nowrap shrink-0">
-                            {groupFindingsCount}{' '}
-                            {groupFindingsCount === 1
-                              ? 'apontamento'
-                              : 'apontamentos'}
-                          </span>
+                        }
+                        className="space-y-5"
+                      >
+                        {flatGroup.items.map((item, localIdx) =>
+                          renderArtigoCard(
+                            item.art,
+                            item.globalIndex,
+                            localIdx,
+                            flatGroup.items.length
+                          )
                         )}
-                      </button>
+                      </SortableNormaGroup>
+                    );
+                  }
 
-                      <div className="flex flex-wrap items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (isCollapsed) {
-                              toggleDivisionGroup(group.key);
-                            }
-                            insertArtigoAt(lastItem.globalIndex + 1, true);
-                          }}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded transition-colors whitespace-nowrap shrink-0"
-                        >
-                          <Plus className="w-3 h-3" />
-                          <span>
-                            {isTech
-                              ? `Item nesta ${kindLabel}`
-                              : `Artigo neste ${kindLabel}`}
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => toggleDivisionGroup(group.key)}
-                          aria-expanded={!isCollapsed}
-                          aria-label={`${isCollapsed ? 'Expandir' : 'Recolher'} ${
-                            group.divisionText.trim() || kindLabel
-                          }`}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded transition-colors whitespace-nowrap shrink-0"
-                        >
-                          {isCollapsed ? (
-                            <ChevronRight className="w-3.5 h-3.5" />
-                          ) : (
-                            <ChevronDown className="w-3.5 h-3.5" />
-                          )}
-                          <span>{isCollapsed ? 'Expandir' : 'Recolher'}</span>
-                        </button>
-                      </div>
-                    </div>
+                  const kindLabel = isTech
+                    ? 'Seção'
+                    : activeDivisionKind
+                      ? DIVISION_KIND_SINGULAR[activeDivisionKind]
+                      : 'Seção';
 
-                    {!isCollapsed && (
-                      <div className="p-4 space-y-6 divide-y divide-slate-200">
-                        {group.items.map((item, localIdx) =>
-                          renderArtigoCard(item.art, item.globalIndex, localIdx)
+                  const leadingGroups = divisionGroups
+                    .map((group, groupIdx) => ({ group, groupIdx }))
+                    .filter(({ group }) => !group.hasExplicitDivision);
+                  const explicitGroups = divisionGroups
+                    .map((group, groupIdx) => ({ group, groupIdx }))
+                    .filter(({ group }) => group.hasExplicitDivision);
+
+                  const getGroupMetrics = (
+                    group: (typeof divisionGroups)[number]
+                  ) => {
+                    const getItemDisplayLabel = (
+                      globalIdx: number,
+                      sufixo?: string
+                    ) =>
+                      progressiveLayout?.[globalIdx]
+                        ? progressiveLayout[globalIdx].itemLabel.replace(
+                            /\.$/,
+                            ''
+                          )
+                        : formatArtigoNumero(globalIdx + 1, sufixo).replace(
+                            /\.$/,
+                            ''
+                          );
+                    const firstArtNum = getItemDisplayLabel(
+                      group.items[0].globalIndex,
+                      group.items[0].art.sufixo
+                    );
+                    const lastItem = group.items[group.items.length - 1];
+                    const lastArtNum = getItemDisplayLabel(
+                      lastItem.globalIndex,
+                      lastItem.art.sufixo
+                    );
+                    const rangeLabel =
+                      group.items.length === 1
+                        ? isTech
+                          ? `Item ${firstArtNum}`
+                          : firstArtNum
+                        : isTech
+                          ? `Itens ${firstArtNum} a ${lastArtNum}`
+                          : `${firstArtNum} a ${lastArtNum}`;
+                    const groupFindingsCount = group.items.reduce((acc, it) => {
+                      const artId = it.art.id;
+                      const artFindings = review.findings.filter((f) =>
+                        f.fieldKey.includes(`:${artId}`)
+                      );
+                      return acc + artFindings.length;
+                    }, 0);
+                    return { lastItem, rangeLabel, groupFindingsCount };
+                  };
+
+                  return (
+                    <>
+                      {leadingGroups.map(({ group }) => {
+                        const isCollapsed = Boolean(
+                          collapsedTitulos[group.key]
+                        );
+                        const { lastItem, rangeLabel, groupFindingsCount } =
+                          getGroupMetrics(group);
+                        return (
+                          <div
+                            key={group.key}
+                            className="border border-slate-200 rounded-lg bg-white"
+                          >
+                            <div
+                              className={`bg-slate-50 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 ${
+                                isCollapsed
+                                  ? 'rounded-lg'
+                                  : 'rounded-t-lg border-b border-slate-200'
+                              }`}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => toggleDivisionGroup(group.key)}
+                                aria-expanded={!isCollapsed}
+                                className="flex items-center gap-2 text-left min-w-0 flex-1 group"
+                              >
+                                <span className="text-xs font-semibold text-slate-900 truncate group-hover:underline">
+                                  {`Disposições Iniciais (sem ${kindLabel})`}
+                                </span>
+                                <span className="text-xs font-mono tabular-nums text-slate-500 whitespace-nowrap shrink-0">
+                                  · {rangeLabel} ({group.items.length}{' '}
+                                  {isTech
+                                    ? group.items.length === 1
+                                      ? 'item'
+                                      : 'itens'
+                                    : group.items.length === 1
+                                      ? 'artigo'
+                                      : 'artigos'}
+                                  )
+                                </span>
+                                {isCollapsed && groupFindingsCount > 0 && (
+                                  <span className="px-1.5 py-0.5 text-[11px] font-medium text-amber-800 bg-amber-100 border border-amber-200 rounded whitespace-nowrap shrink-0">
+                                    {groupFindingsCount}{' '}
+                                    {groupFindingsCount === 1
+                                      ? 'apontamento'
+                                      : 'apontamentos'}
+                                  </span>
+                                )}
+                              </button>
+
+                              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (isCollapsed) {
+                                      toggleDivisionGroup(group.key);
+                                    }
+                                    insertArtigoAt(
+                                      lastItem.globalIndex + 1,
+                                      true
+                                    );
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded transition-colors whitespace-nowrap shrink-0"
+                                >
+                                  <Plus className="w-3 h-3" />
+                                  <span>
+                                    {isTech
+                                      ? `Item nesta ${kindLabel}`
+                                      : `Artigo neste ${kindLabel}`}
+                                  </span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleDivisionGroup(group.key)}
+                                  aria-expanded={!isCollapsed}
+                                  aria-label={`${isCollapsed ? 'Expandir' : 'Recolher'} Disposições Iniciais`}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded transition-colors whitespace-nowrap shrink-0"
+                                >
+                                  {isCollapsed ? (
+                                    <ChevronRight className="w-3.5 h-3.5" />
+                                  ) : (
+                                    <ChevronDown className="w-3.5 h-3.5" />
+                                  )}
+                                  <span>
+                                    {isCollapsed ? 'Expandir' : 'Recolher'}
+                                  </span>
+                                </button>
+                              </div>
+                            </div>
+
+                            {!isCollapsed && (
+                              <SortableNormaGroup
+                                values={group.items.map((item) => item.art.id)}
+                                onReorder={(nextIds) =>
+                                  handleReorderArtigosInGroup(
+                                    group.startIndex,
+                                    group.endIndex,
+                                    nextIds
+                                  )
+                                }
+                                className="p-4 space-y-5"
+                              >
+                                {group.items.map((item, localIdx) =>
+                                  renderArtigoCard(
+                                    item.art,
+                                    item.globalIndex,
+                                    localIdx,
+                                    group.items.length
+                                  )
+                                )}
+                              </SortableNormaGroup>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                      <SortableNormaGroup
+                        values={explicitGroups.map(({ group }) =>
+                          getStableGroupKey(group.leaderArtId)
                         )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                        onReorder={handleReorderDivisionGroups}
+                        className="space-y-4"
+                      >
+                        {explicitGroups.map(({ group, groupIdx }) => {
+                          const stableGroupKey = getStableGroupKey(
+                            group.leaderArtId
+                          );
+                          const isCollapsed = Boolean(
+                            collapsedTitulos[group.key]
+                          );
+                          const { lastItem, rangeLabel, groupFindingsCount } =
+                            getGroupMetrics(group);
+
+                          return (
+                            <SortableNormaItem
+                              key={stableGroupKey}
+                              value={stableGroupKey}
+                              canDrag={explicitGroups.length > 1}
+                              className="border border-slate-200 rounded-lg bg-white"
+                              draggingClassName="border-slate-400 ring-1 ring-slate-300 bg-white"
+                            >
+                              {({ isDragging, startDrag }) => (
+                                <>
+                                  <div
+                                    className={`bg-slate-50 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 ${
+                                      isCollapsed
+                                        ? 'rounded-lg'
+                                        : 'rounded-t-lg border-b border-slate-200'
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                                      {explicitGroups.length > 1 && (
+                                        <SortableDragHandleButton
+                                          onPointerDown={startDrag}
+                                          isDragging={isDragging}
+                                          label={`Arrastar para reordenar ${kindLabel}`}
+                                        />
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          toggleDivisionGroup(group.key)
+                                        }
+                                        aria-expanded={!isCollapsed}
+                                        className="flex items-center gap-2 text-left min-w-0 flex-1 group"
+                                      >
+                                        <span className="text-xs font-semibold text-slate-900 truncate group-hover:underline">
+                                          {group.divisionText.trim() ||
+                                            `${kindLabel} sem denominação`}
+                                        </span>
+                                        <span className="text-xs font-mono tabular-nums text-slate-500 whitespace-nowrap shrink-0">
+                                          · {rangeLabel} ({group.items.length}{' '}
+                                          {isTech
+                                            ? group.items.length === 1
+                                              ? 'item'
+                                              : 'itens'
+                                            : group.items.length === 1
+                                              ? 'artigo'
+                                              : 'artigos'}
+                                          )
+                                        </span>
+                                        {isCollapsed &&
+                                          groupFindingsCount > 0 && (
+                                            <span className="px-1.5 py-0.5 text-[11px] font-medium text-amber-800 bg-amber-100 border border-amber-200 rounded whitespace-nowrap shrink-0">
+                                              {groupFindingsCount}{' '}
+                                              {groupFindingsCount === 1
+                                                ? 'apontamento'
+                                                : 'apontamentos'}
+                                            </span>
+                                          )}
+                                      </button>
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                                      {explicitGroups.length > 1 &&
+                                        renderReorderStepper({
+                                          canUp:
+                                            groupIdx > 0 &&
+                                            Boolean(
+                                              divisionGroups[groupIdx - 1]
+                                                ?.hasExplicitDivision
+                                            ),
+                                          canDown:
+                                            groupIdx <
+                                            divisionGroups.length - 1,
+                                          onUp: () =>
+                                            handleMoveDivisionGroup(
+                                              groupIdx,
+                                              'up'
+                                            ),
+                                          onDown: () =>
+                                            handleMoveDivisionGroup(
+                                              groupIdx,
+                                              'down'
+                                            ),
+                                          upLabel: `Subir ${kindLabel} inteiro (reordena numeração)`,
+                                          downLabel: `Descer ${kindLabel} inteiro (reordena numeração)`,
+                                          groupLabel: `Reordenar ${kindLabel}`,
+                                        })}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (isCollapsed) {
+                                            toggleDivisionGroup(group.key);
+                                          }
+                                          insertArtigoAt(
+                                            lastItem.globalIndex + 1,
+                                            true
+                                          );
+                                        }}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded transition-colors whitespace-nowrap shrink-0"
+                                      >
+                                        <Plus className="w-3 h-3" />
+                                        <span>
+                                          {isTech
+                                            ? `Item nesta ${kindLabel}`
+                                            : `Artigo neste ${kindLabel}`}
+                                        </span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          toggleDivisionGroup(group.key)
+                                        }
+                                        aria-expanded={!isCollapsed}
+                                        aria-label={`${isCollapsed ? 'Expandir' : 'Recolher'} ${
+                                          group.divisionText.trim() || kindLabel
+                                        }`}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded transition-colors whitespace-nowrap shrink-0"
+                                      >
+                                        {isCollapsed ? (
+                                          <ChevronRight className="w-3.5 h-3.5" />
+                                        ) : (
+                                          <ChevronDown className="w-3.5 h-3.5" />
+                                        )}
+                                        <span>
+                                          {isCollapsed
+                                            ? 'Expandir'
+                                            : 'Recolher'}
+                                        </span>
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {!isCollapsed && (
+                                    <SortableNormaGroup
+                                      values={group.items.map(
+                                        (item) => item.art.id
+                                      )}
+                                      onReorder={(nextIds) =>
+                                        handleReorderArtigosInGroup(
+                                          group.startIndex,
+                                          group.endIndex,
+                                          nextIds
+                                        )
+                                      }
+                                      className="p-4 space-y-5"
+                                    >
+                                      {group.items.map((item, localIdx) =>
+                                        renderArtigoCard(
+                                          item.art,
+                                          item.globalIndex,
+                                          localIdx,
+                                          group.items.length
+                                        )
+                                      )}
+                                    </SortableNormaGroup>
+                                  )}
+                                </>
+                              )}
+                            </SortableNormaItem>
+                          );
+                        })}
+                      </SortableNormaGroup>
+                    </>
+                  );
+                })()}
               </div>
+              </MotionConfig>
               )}
             </section>
 
@@ -3820,6 +5045,17 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                         {...nativeFieldProps}
                         className="flex-1 text-sm bg-white border border-slate-300 rounded-md px-3 py-1.5 text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
                       />
+                      {doc.revogacoes.length > 1 &&
+                        renderReorderStepper({
+                          canUp: rIdx > 0,
+                          canDown: rIdx < doc.revogacoes.length - 1,
+                          onUp: () => handleMoveRevogacao(rIdx, 'up'),
+                          onDown: () => handleMoveRevogacao(rIdx, 'down'),
+                          upLabel: 'Subir item revogado',
+                          downLabel: 'Descer item revogado',
+                          groupLabel: 'Reordenar revogação',
+                          compact: true,
+                        })}
                       <button
                         type="button"
                         onClick={() =>
@@ -4069,6 +5305,20 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                   </button>
                   <button
                     type="button"
+                    onClick={() => setRightPaneMode('indice')}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
+                      rightPaneMode === 'indice'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span className="tabular-nums">
+                      Índice ({indiceRemissivo.totalAssuntos})
+                    </span>
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setRightPaneMode('revisor')}
                     className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded transition-colors whitespace-nowrap ${
                       rightPaneMode === 'revisor'
@@ -4253,6 +5503,12 @@ export const EditorEstruturadoView: React.FC<EditorEstruturadoViewProps> = ({
                 summary={complianceChecklist}
                 onLocateField={handleLocateField}
                 onRunFullAudit={() => onAuditDraft(plainText)}
+              />
+            ) : rightPaneMode === 'indice' ? (
+              <IndiceRemissivoPanel
+                doc={doc}
+                indexResult={indiceRemissivo}
+                onLocateField={handleLocateField}
               />
             ) : rightPaneMode === 'revisor' ? (
               <RevisorLinguisticoPanel

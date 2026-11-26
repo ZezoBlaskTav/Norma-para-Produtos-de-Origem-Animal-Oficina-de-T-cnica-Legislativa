@@ -6,6 +6,7 @@
 3. **Administrador Inicial (Bootstrap)**: O administrador inicial (`joseluisblaskowskitavares@gmail.com` com `email_verified == true`) e administradores listados em `/admins/{uid}` detêm permissão de gestão sobre `/users`, `/allowlist` e `/admins`.
 4. **Isolamento de PII e Listagens**: Apenas administradores podem listar `/users` e `/allowlist`; usuários comuns só podem ler o próprio perfil `/users/{request.auth.uid}` e verificar seu próprio e-mail em `/allowlist/{email}`.
 5. **Integridade Temporal e de Chaves**: Todos os timestamps usam `request.time`, campos de identidade (`uid`, `ownerId`, `createdAt`) são imutáveis e `keys().hasOnly(...)` impede shadow fields.
+6. **Preferências de IA Validadas**: Os campos `aiModelEmenta` e `aiModelAuditoria` em `/users/{uid}` aceitam exclusivamente os identificadores permitidos (`flash-lite`, `flash-padrao`, `flash-profundo`) e só podem ser alterados pelo próprio titular verificado (ou administrador).
 
 ## 2. "Dirty Dozen" Payloads Bloqueados
 1. Usuário não autenticado tentando ler `/users`, `/allowlist` ou `/admins`. -> `PERMISSION_DENIED`.
@@ -19,4 +20,4 @@
 9. Ataque de falsificação de e-mail com `email == "joseluisblaskowskitavares@gmail.com"` e `email_verified == false`. -> `PERMISSION_DENIED`.
 10. Shadow Update enviando campo extra em `/users/{uid}` ou `/allowlist/{emailKey}`. -> `PERMISSION_DENIED`.
 11. Chave malformada em `/allowlist/{emailKey}` ou ID inválido em `/users/{userId}`. -> `PERMISSION_DENIED`.
-12. Timestamp falsificado (`createdAt != request.time` ou alteração de `createdAt` em `update`). -> `PERMISSION_DENIED`.
+12. Timestamp falsificado (`createdAt != request.time` ou alteração de `createdAt` em `update`) ou valor arbitrário em `aiModelEmenta` / `aiModelAuditoria`. -> `PERMISSION_DENIED`.
